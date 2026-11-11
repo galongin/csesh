@@ -128,6 +128,27 @@ input:focus,textarea:focus{border-color:var(--accent)}
 .tier-3{background:rgba(6,182,212,.1);color:var(--blue)}
 .tier-4{background:var(--green-bg);color:var(--green)}
 
+/* Workflow status badges (separate from tier badges: square corners, outlined) */
+.st{display:inline-flex;align-items:center;font-size:.7rem;font-weight:600;padding:1px 7px;border-radius:4px;border:1px solid transparent;white-space:nowrap}
+.st-backlog{color:var(--purple);border-color:color-mix(in srgb,var(--purple) 35%,transparent);background:color-mix(in srgb,var(--purple) 8%,transparent)}
+.st-wip{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);background:var(--accent-bg)}
+.st-done{color:var(--green);border-color:color-mix(in srgb,var(--green) 35%,transparent);background:var(--green-bg)}
+.st-none{color:var(--text-3);border-color:var(--border)}
+.imp{color:var(--red);font-weight:800;margin-right:3px}
+.grp-row td{background:var(--bg-1)!important;color:var(--text-2);font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em;padding:10px 10px 6px;cursor:pointer;user-select:none}
+.grp-row td .grp-count{color:var(--text-3);font-weight:500;margin-left:6px}
+.status-btns{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:4px 0 12px}
+.status-btns .btn.active{border-color:currentColor}
+.status-btns .btn.st-btn-backlog.active{color:var(--purple);background:color-mix(in srgb,var(--purple) 8%,transparent)}
+.status-btns .btn.st-btn-wip.active{color:var(--accent);background:var(--accent-bg)}
+.status-btns .btn.st-btn-done.active{color:var(--green);background:var(--green-bg)}
+.status-btns .btn.st-btn-imp.active{color:var(--red);background:var(--red-bg)}
+.status-btns .hint{font-size:.68rem;color:var(--text-3)}
+.tier-row.clickable{cursor:pointer;border-radius:4px;padding:2px 4px;margin:0 -4px}
+.tier-row.clickable:hover{background:var(--bg-3);color:var(--text-1)}
+.tier-row.active{color:var(--text-1);font-weight:600}
+.tab-sep{width:1px;background:var(--border);margin:4px 4px}
+
 /* Tag chips */
 .tag{display:inline-flex;align-items:center;gap:3px;font-size:.7rem;padding:2px 8px;border-radius:10px;background:var(--bg-3);color:var(--purple);font-weight:500;margin:1px}
 .tag .x{cursor:pointer;opacity:.5;margin-left:2px}.tag .x:hover{opacity:1}
@@ -395,6 +416,7 @@ input:focus,textarea:focus{border-color:var(--accent)}
             <option value="size">Sort: Size</option>
             <option value="messages">Sort: Messages</option>
             <option value="tier">Sort: Tier</option>
+            <option value="status">Sort: Status</option>
             <option value="project">Sort: Project</option>
           </select>
           <input type="text" id="filterInput" placeholder="Filter..." oninput="currentPage=0;renderActive()" style="width:180px;font-size:.8rem">
@@ -412,6 +434,7 @@ input:focus,textarea:focus{border-color:var(--accent)}
           <th onclick="sortBy('messages')">Msgs</th>
           <th onclick="sortBy('size')">Size</th>
           <th onclick="sortBy('tier')">Tier</th>
+          <th onclick="sortBy('status')">Status</th>
           <th>Actions</th>
         </tr></thead>
         <tbody id="tableBody"></tbody>
@@ -462,6 +485,15 @@ input:focus,textarea:focus{border-color:var(--accent)}
   <span><span class="count" id="selCount">0</span> selected</span>
   <button class="btn btn-sm btn-danger" onclick="batchTrash()">Trash</button>
   <button class="btn btn-sm" onclick="batchTag()">Tag</button>
+  <select id="batchStatusSelect" onchange="batchStatus(this.value);this.value=''" style="font-size:.78rem;padding:3px 8px" title="Set status for selected sessions">
+    <option value="">Status…</option>
+    <option value="wip">WIP</option>
+    <option value="backlog">Backlog</option>
+    <option value="done">Done</option>
+    <option value="clear">Clear (default)</option>
+    <option value="imp-on">! Mark important</option>
+    <option value="imp-off">Unmark important</option>
+  </select>
   <button class="btn btn-sm" onclick="clearSelection()">Cancel</button>
 </div>
 
@@ -522,11 +554,16 @@ input:focus,textarea:focus{border-color:var(--accent)}
 
 <script>
 // ── State ──
-let allSessions=[],stats=null,currentProject=null,currentTab='all',currentSort='date',currentPage=0,selectedIds=new Set(),focusIdx=-1,lastDataRefresh=null,currentTsTab='recent';
+let allSessions=[],stats=null,currentProject=null,currentTab='mine',currentSort='date',currentPage=0,selectedIds=new Set(),focusIdx=-1,lastDataRefresh=null,currentTsTab='recent';
 const PAGE=50;
 let charts={};
 const tierNames={1:'Auto-delete',2:'Suggested',3:'Review',4:'Keep'};
 const tierClasses={1:'tier-1',2:'tier-2',3:'tier-3',4:'tier-4'};
+// Workflow status (see lib/status.js — the server computes the effective status)
+const STATUS_ORDER=['wip','backlog','done'];
+const statusNames={wip:'WIP',backlog:'Backlog',done:'Done'};
+const STATUS_TABS=['mine','wip','backlog','done','important'];
+let doneCollapsed=true;
 
 // ── API ──
 async function api(p){try{const r=await fetch(p);if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}catch(e){toast('API error: '+e.message,'error');throw e}}
@@ -539,6 +576,12 @@ function fmtBytes(b){if(!b)return'0 B';const u=['B','KB','MB','GB'];const i=Math
 function fmtDur(ms){if(!ms||ms<0)return'0s';if(ms<60000)return Math.round(ms/1000)+'s';if(ms<3600000)return Math.round(ms/60000)+'m';const h=Math.floor(ms/3600000),m=Math.round((ms%3600000)/60000);return m>0?h+'h '+m+'m':h+'h'}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function tierBadge(t){return`<span class="tier ${tierClasses[t]||''}">${tierNames[t]||'?'}</span>`}
+function statusBadge(s){
+  const imp=s.important?'<span class="imp" title="Important">!</span>':'';
+  if(!s.status)return imp+'<span class="st st-none" title="Unsorted (Suggested / Auto-delete tier, no status set)">—</span>';
+  const how=s.statusExplicit?'Set by you':'Default from tier';
+  return imp+`<span class="st st-${s.status}" title="${how}">${statusNames[s.status]}</span>`;
+}
 function toast(msg,type='success'){const t=document.getElementById('toast');const d=document.createElement('div');d.className='toast-item '+type;d.textContent=msg;t.appendChild(d);setTimeout(()=>d.remove(),3000)}
 
 // ── Init ──
@@ -550,10 +593,9 @@ async function init(){
     lastDataRefresh=new Date();
     renderProjects(projData);
     renderOverview();
-    renderTabs();
     document.getElementById('loading').style.display='none';
-    document.getElementById('overview').style.display='';
     updateSidebar();
+    showList(); // default landing: My view (WIP + Backlog + Done); Overview is one click / 'g' away
     if(stats.version){document.getElementById('infoVersion').textContent='v'+stats.version+' — Claude Code session manager'}
   }catch(e){document.getElementById('loading').textContent='Error: '+e.message}
 }
@@ -565,7 +607,7 @@ function renderProjects(projects){
     projects.map(p=>'<li class="sb-item" onclick="selectProject(\''+p.slug+'\')" data-slug="'+p.slug+'"><span class="sensitive">'+esc(p.shortName)+'</span><span class="sb-badge">'+p.sessions+'</span></li>').join('');
 }
 function selectProject(slug){
-  currentProject=slug;currentPage=0;currentTab='all';
+  currentProject=slug;currentPage=0;if(currentTab==='trash')currentTab='mine';
   document.querySelectorAll('#projectList .sb-item').forEach(li=>li.classList.toggle('active',li.dataset.slug===(slug||'')));
   showList();
 }
@@ -574,7 +616,8 @@ function updateSidebar(){
   const td=stats.tierDistribution||{};
   document.getElementById('sidebarTiers').innerHTML=
     '<div class="sb-section-title">Classification</div>'+
-    [4,3,2,1].map(t=>'<div class="tier-row"><span><span class="dot" style="background:var(--'+(t===4?'green':t===3?'blue':t===2?'yellow':'red')+')"></span>'+tierNames[t]+'</span><span>'+(td[t]||0)+'</span></div>').join('');
+    [4,3,2,1].map(t=>'<div class="tier-row"><span><span class="dot" style="background:var(--'+(t===4?'green':t===3?'blue':t===2?'yellow':'red')+')"></span>'+tierNames[t]+'</span><span>'+(td[t]||0)+'</span></div>').join('')+
+    renderStatusCard();
   const isStreamer=document.body.classList.contains('streamer-mode');
   document.getElementById('sidebarFooter').innerHTML=`
     <div class="sb-footer-row">
@@ -589,6 +632,28 @@ function updateSidebar(){
       <button onclick="document.getElementById('infoModal').style.display='flex'" title="About csesh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>
     </div>`;
   updateThemeButton();
+}
+
+function statusCountsLocal(){
+  const c={wip:0,backlog:0,done:0,unsorted:0,important:0};
+  for(const s of allSessions){c[s.status||'unsorted']++;if(s.important)c.important++}
+  return c;
+}
+function renderStatusCard(){
+  const c=statusCountsLocal();
+  const row=(tab,label,color,n)=>`<div class="tier-row clickable${currentTab===tab?' active':''}" onclick="showStatusTab('${tab}')" title="Show ${label}"><span><span class="dot" style="background:var(--${color})"></span>${label}</span><span>${n}</span></div>`;
+  return '<div class="sb-section-title" style="margin-top:8px">Status</div>'+
+    row('important','! Important','red',c.important)+
+    row('wip','WIP','accent',c.wip)+
+    row('backlog','Backlog','purple',c.backlog)+
+    row('done','Done','green',c.done)+
+    `<div class="tier-row clickable" onclick="showStatusTab('mine')" style="color:var(--text-3)"><span>My view</span><span>${c.wip+c.backlog+c.done}</span></div>`;
+}
+function showStatusTab(tab){
+  currentTab=tab;currentPage=0;focusIdx=-1;
+  if(document.getElementById('listView').style.display==='none'||document.getElementById('detail').style.display!=='none'){document.getElementById('detail').style.display='none';showList()}
+  else{renderTabs();showListFromTab()}
+  updateSidebar();
 }
 
 // ── Overview ──
@@ -628,6 +693,7 @@ async function refreshData(){
     renderProjects(projData);
     renderOverview();
     updateSidebar();
+    if(document.getElementById('listView').style.display!=='none')renderTable();
     toast('Data refreshed');
   }catch(e){toast('Refresh failed: '+e.message,'error')}
 }
@@ -689,12 +755,15 @@ function renderCharts(){
 
 // ── Tabs ──
 function renderTabs(){
+  const stTabs=[{id:'mine',label:'My view'},{id:'wip',label:'WIP'},{id:'backlog',label:'Backlog'},{id:'done',label:'Done'},{id:'important',label:'<span style="color:var(--red);font-weight:800">!</span> Important'}];
   const tabs=[{id:'all',label:'All'},{id:'keep',label:'Keep'},{id:'review',label:'Review'},{id:'suggested',label:'Suggested'},{id:'auto-delete',label:'Auto-delete'},{id:'trash',label:'Trash'},{id:'favorites',label:'★'}];
   document.getElementById('tabs').innerHTML=
     `<button class="tab" onclick="showOverview()" title="Back to Dashboard" style="color:var(--accent);font-size:.8rem">⬡</button>`+
+    stTabs.map(t=>`<button class="tab${currentTab===t.id?' active':''}" onclick="setTab('${t.id}')">${t.label}</button>`).join('')+
+    '<span class="tab-sep"></span>'+
     tabs.map(t=>`<button class="tab${currentTab===t.id?' active':''}" onclick="setTab('${t.id}')">${t.label}</button>`).join('');
 }
-function setTab(id){currentTab=id;currentPage=0;focusIdx=-1;renderTabs();if(id==='trash'){showTrash()}else{showListFromTab()}}
+function setTab(id){currentTab=id;currentPage=0;focusIdx=-1;renderTabs();if(id==='trash'){showTrash()}else{showListFromTab()}updateSidebar()}
 function renderActive(){if(currentTab==='trash')renderTrashTable();else renderTable()}
 
 // ── List View ──
@@ -716,7 +785,9 @@ function showOverview(){
   ['browseNav','listView','detail','trashView'].forEach(id=>document.getElementById(id).style.display='none');
   document.getElementById('overview').style.display='';
 }
-function getFiltered(){
+function byRecent(a,b){if(!a.lastTimestamp)return 1;if(!b.lastTimestamp)return-1;return new Date(b.lastTimestamp)-new Date(a.lastTimestamp)}
+function statusRank(x){const i=STATUS_ORDER.indexOf(x.status);return i<0?STATUS_ORDER.length:i}
+function getFiltered(ignoreCollapse=false){
   let s=[...allSessions];
   if(currentProject)s=s.filter(x=>x.slug===currentProject);
   if(currentTab==='keep')s=s.filter(x=>x.tier===4);
@@ -724,6 +795,9 @@ function getFiltered(){
   else if(currentTab==='suggested')s=s.filter(x=>x.tier===2);
   else if(currentTab==='auto-delete')s=s.filter(x=>x.tier===1);
   else if(currentTab==='favorites')s=s.filter(x=>x.favorite);
+  else if(currentTab==='mine')s=s.filter(x=>x.status&&(ignoreCollapse||x.status!=='done'||!doneCollapsed));
+  else if(currentTab==='wip'||currentTab==='backlog'||currentTab==='done')s=s.filter(x=>x.status===currentTab);
+  else if(currentTab==='important')s=s.filter(x=>x.important);
   const q=document.getElementById('filterInput')?.value?.toLowerCase();
   if(q)s=s.filter(x=>(x.title||'').toLowerCase().includes(q)||(x.displayTitle||'').toLowerCase().includes(q)||(x.shortProject||'').toLowerCase().includes(q)||(x.gitBranch||'').toLowerCase().includes(q)||(x.id||'').toLowerCase().includes(q)||(x.tags||[]).some(t=>t.includes(q))||(x.autoTags||[]).some(t=>t.includes(q)));
   switch(currentSort){
@@ -732,21 +806,30 @@ function getFiltered(){
     case'tier':s.sort((a,b)=>a.tier-b.tier);break;
     case'project':s.sort((a,b)=>(a.shortProject||'').localeCompare(b.shortProject||''));break;
     case'title':s.sort((a,b)=>(a.displayTitle||a.title||'').localeCompare(b.displayTitle||b.title||''));break;
-    default:s.sort((a,b)=>{if(!a.lastTimestamp)return 1;if(!b.lastTimestamp)return-1;return new Date(b.lastTimestamp)-new Date(a.lastTimestamp)})
+    case'status':s.sort((a,b)=>statusRank(a)-statusRank(b)||byRecent(a,b));break;
+    default:s.sort(byRecent)
   }
+  // My view: group WIP → Backlog → Done (stable sort keeps the chosen order inside each group)
+  if(currentTab==='mine')s.sort((a,b)=>statusRank(a)-statusRank(b));
   return s;
 }
 function renderTable(){
   const f=getFiltered(),start=currentPage*PAGE,page=f.slice(start,start+PAGE);
   const body=document.getElementById('tableBody');
-  body.innerHTML=page.map((s,i)=>{
+  const grouped=currentTab==='mine';
+  const groupCounts={wip:0,backlog:0,done:0};
+  if(grouped)for(const x of getFiltered(true))groupCounts[x.status]++;
+  const groupRow=(st,cont)=>`<tr class="grp-row" onclick="${st==='done'?'toggleDoneGroup()':''}"><td colspan="9">${st==='done'?(doneCollapsed?'▸ ':'▾ '):''}${statusNames[st]}<span class="grp-count">${groupCounts[st]}${cont?' · continued':''}</span></td></tr>`;
+  let html=page.map((s,i)=>{
+    let hdr='';
+    if(grouped&&(i===0||page[i-1].status!==s.status))hdr=groupRow(s.status,i===0&&start>0&&f[start-1]?.status===s.status);
     const sel=selectedIds.has(s.id);
     const fav=s.favorite?'<span style="color:var(--yellow)">★</span> ':'';
     const title=fav+esc((s.displayTitle||s.title||'').slice(0,55));
     const tags=(s.tags||[]).slice(0,2).map(t=>'<span class="tag">#'+esc(t)+'</span>').join('');
     const date=s.lastTimestamp?new Date(s.lastTimestamp).toLocaleDateString('en-CA'):'—';
     const idx=start+i;
-    return`<tr class="row-click${sel?' selected':''}" data-idx="${idx}" data-id="${s.id}" onclick="rowClick('${s.id}',event)">
+    return hdr+`<tr class="row-click${sel?' selected':''}" data-idx="${idx}" data-id="${s.id}" onclick="rowClick('${s.id}',event)">
       <td><input type="checkbox" class="chk" ${sel?'checked':''} onchange="toggleSelect('${s.id}',this.checked)" onclick="event.stopPropagation()"></td>
       <td>${date}</td>
       <td class="sensitive">${esc((s.shortProject||'').slice(0,18))}</td>
@@ -754,13 +837,19 @@ function renderTable(){
       <td>${s.userMessageCount+s.assistantMessageCount}</td>
       <td>${fmtBytes(s.fileSizeBytes)}</td>
       <td>${tierBadge(s.tier)}</td>
+      <td>${statusBadge(s)}</td>
       <td><button class="btn-icon" title="Trash" onclick="event.stopPropagation();trashOne('${s.id}')">🗑</button></td>
     </tr>`}).join('');
+  // My view: show the (collapsed) Done group header at the end of the last page
+  if(grouped&&doneCollapsed&&groupCounts.done>0&&start+PAGE>=f.length)html+=groupRow('done',false);
+  if(!page.length&&!(grouped&&groupCounts.done))html=`<tr><td colspan="9" style="text-align:center;color:var(--text-3);padding:24px">No sessions here${STATUS_TABS.includes(currentTab)?' — mark sessions with '+[['statusWip','WIP'],['statusBacklog','Backlog'],['statusDone','Done'],['important','Important']].map(([a,l])=>`<span class="kb-key">${keyHint(a)}</span> ${l}`).join(', '):''}</td></tr>`;
+  body.innerHTML=html;
   // Pagination
   const totalPages=Math.ceil(f.length/PAGE),pag=document.getElementById('pag');
   if(totalPages>1){let h='';if(currentPage>0)h+=`<button class="btn btn-sm" onclick="currentPage--;renderTable()">← Prev</button>`;h+=`<span>${currentPage+1} / ${totalPages} (${f.length})</span>`;if(currentPage<totalPages-1)h+=`<button class="btn btn-sm" onclick="currentPage++;renderTable()">Next →</button>`;pag.innerHTML=h}else{pag.innerHTML=`<span>${f.length} sessions</span>`}
   updateActionBar();
 }
+function toggleDoneGroup(){doneCollapsed=!doneCollapsed;focusIdx=-1;renderTable()}
 function sortBy(field){currentSort=field;currentPage=0;document.getElementById('sortSelect').value=field;renderTable()}
 
 // ── Selection ──
@@ -779,6 +868,72 @@ function batchTag(){
   const doTag=async()=>{const tag=inp.value.trim();inp.remove();if(!tag)return;await apiPost('/api/batch/tag',{ids:[...selectedIds],tag});selectedIds.clear();const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];renderTable();toast(`Tagged with #${tag}`)};
   inp.addEventListener('keydown',e=>{if(e.key==='Enter')doTag();if(e.key==='Escape')inp.remove()});
   inp.addEventListener('blur',()=>setTimeout(()=>inp.parentNode&&inp.remove(),200));
+}
+
+// ── Status actions ──
+function statusButtons(s){
+  const b=(st,label,key)=>`<button class="btn btn-sm st-btn-${st}${s.status===st?' active':''}" onclick="setStatus('${s.id}','${st}')" title="${label} (${keyHint(key)})">${label}</button>`;
+  return `<button class="btn btn-sm st-btn-imp${s.important?' active':''}" onclick="toggleImportant('${s.id}')" title="Important (${keyHint('important')})"><span style="font-weight:800">!</span> Important</button>`+
+    b('wip','WIP','statusWip')+b('backlog','Backlog','statusBacklog')+b('done','Done','statusDone')+
+    (s.statusExplicit?`<button class="btn btn-sm" onclick="setStatus('${s.id}',null)" title="Clear — back to the default for its tier">Clear</button>`:'')+
+    `<span class="hint">${s.statusExplicit?'Set by you':s.status?'Default from tier':'Unsorted'}</span>`;
+}
+function keyHint(action){const b=getKeybindings()[action];return b?keyLabel(b).join('+'):''}
+/** Re-point keyboard focus at the same session after a re-sort; if it left the view, keep the index (= next row). */
+function keepFocusOn(id){
+  if(focusIdx<0||!id)return;
+  const f=getFiltered();const i=f.findIndex(x=>x.id===id);
+  if(i>=0)focusIdx=i;else focusIdx=Math.min(focusIdx,f.length-1);
+  if(focusIdx>=0)currentPage=Math.floor(focusIdx/PAGE);
+}
+function applyStatusUpdate(id,r){
+  const focusedId=(()=>{const f=getFiltered();return focusIdx>=0&&f[focusIdx]?f[focusIdx].id:null})();
+  const s=allSessions.find(x=>x.id===id);
+  if(s){if('status' in r)s.status=r.status;if('statusExplicit' in r)s.statusExplicit=r.statusExplicit;if('important' in r)s.important=r.important}
+  if(currentDetailId===id&&document.getElementById('detail').style.display!=='none'){
+    const el=document.getElementById('statusBtns');if(el&&s)el.innerHTML=statusButtons(s);
+  }
+  keepFocusOn(focusedId);
+  if(document.getElementById('listView').style.display!=='none'){renderTable();highlightRow()}
+  updateSidebar();
+}
+async function setStatus(id,status){
+  const r=await apiPost(`/api/sessions/${id}/status`,{status});
+  applyStatusUpdate(id,r);
+  toast(status?`Marked ${statusNames[status]}`:`Status cleared → ${r.status?statusNames[r.status]:'unsorted'}`);
+}
+async function toggleImportant(id){
+  const r=await apiPost(`/api/sessions/${id}/important`,{});
+  applyStatusUpdate(id,r);
+  toast(r.important?'Marked important':'No longer important');
+}
+async function batchStatus(v){
+  if(!v||selectedIds.size===0)return;
+  const ids=[...selectedIds];
+  if(v==='imp-on'||v==='imp-off')await apiPost('/api/batch/important',{ids,important:v==='imp-on'});
+  else await apiPost('/api/batch/status',{ids,status:v==='clear'?null:v});
+  selectedIds.clear();
+  const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];
+  renderTable();updateSidebar();
+  const what={'imp-on':'marked important','imp-off':'unmarked important',clear:'status cleared'}[v]||('marked '+statusNames[v]);
+  toast(`${ids.length} session${ids.length>1?'s':''} ${what}`);
+}
+/** Keyboard target: selection (list) > focused row (list) > open session (detail). */
+function statusShortcut(kind){
+  const inDetail=document.getElementById('detail').style.display!=='none';
+  const inList=document.getElementById('listView').style.display!=='none';
+  // List with a selection → batch on the selection
+  if(inList&&!inDetail&&selectedIds.size>0){
+    const allImp=[...selectedIds].every(id=>allSessions.find(s=>s.id===id)?.important);
+    batchStatus(kind==='important'?(allImp?'imp-off':'imp-on'):kind);return true;
+  }
+  // Detail view → the open session; list → the focused row
+  let id=null;
+  if(inDetail)id=currentDetailId;
+  else if(inList){const f=getFiltered();if(focusIdx>=0&&f[focusIdx])id=f[focusIdx].id}
+  if(!id)return false;
+  if(kind==='important')toggleImportant(id);else setStatus(id,kind);
+  return true;
 }
 
 // ── Detail ──
@@ -810,6 +965,7 @@ async function showDetail(id){
       <button class="star ${s.favorite?'active':''}" onclick="toggleFav('${s.id}',this)" title="Favorite">${s.favorite?'★':'☆'}</button>
       ${tierBadge(s.tier)}
     </div>
+    <div class="status-btns" id="statusBtns">${statusButtons(s)}</div>
     <div class="detail-tags">${tags}${autoTags}<input type="text" class="tag-input" placeholder="+tag" onkeydown="if(event.key==='Enter'){addTagToSession('${s.id}',this.value);this.value=''}"></div>
     <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
       <div class="card"><div class="card-label">Project</div><div class="card-value" style="font-size:.9rem">${esc(s.shortProject)}</div></div>
@@ -890,7 +1046,7 @@ function goBack(){
   document.getElementById('detail').style.display='none';
   if(previousView==='trashView'){document.getElementById('trashView').style.display=''}
   else if(previousView==='overview'){document.getElementById('overview').style.display=''}
-  else{document.getElementById('browseNav').style.display='';document.getElementById('listView').style.display=''}
+  else{document.getElementById('browseNav').style.display='';document.getElementById('listView').style.display='';renderTable();highlightRow()}
 }
 
 // ── Row click (selection mode vs detail) ──
@@ -1213,6 +1369,10 @@ const DEFAULT_KEYBINDINGS={
   back:{label:'Go back / Close',key:'Escape',mod:false},
   msgSearch:{label:'Search in conversation',key:'f',mod:true},
   favorite:{label:'Toggle favorite',key:'f',mod:false},
+  important:{label:'Toggle important',key:'i',mod:false},
+  statusWip:{label:'Status: WIP',key:'w',mod:false},
+  statusBacklog:{label:'Status: Backlog',key:'b',mod:false},
+  statusDone:{label:'Status: Done',key:'d',mod:false},
   trash:{label:'Trash selected',key:'t',mod:false},
   sort:{label:'Change sort',key:'s',mod:false},
   streamer:{label:'Toggle streamer mode',key:'.',mod:false},
@@ -1308,12 +1468,16 @@ document.addEventListener('keydown',e=>{
   else if(matchesBinding(e,'openSession')&&listVisible&&focusIdx>=0){const f=getFiltered();if(f[focusIdx])showDetail(f[focusIdx].id)}
   else if(matchesBinding(e,'favorite')&&listVisible&&focusIdx>=0){const f=getFiltered();if(f[focusIdx]){const sid=f[focusIdx].id;apiPost(`/api/sessions/${sid}/favorite`).then(r=>{const s=allSessions.find(x=>x.id===sid);if(s)s.favorite=r.favorite;renderTable();toast(r.favorite?'Added to favorites':'Removed from favorites')})}}
   else if(matchesBinding(e,'trash')&&listVisible){if(selectedIds.size>0)batchTrash()}
+  else if(matchesBinding(e,'important')){if(statusShortcut('important'))e.preventDefault()}
+  else if(matchesBinding(e,'statusWip')){if(statusShortcut('wip'))e.preventDefault()}
+  else if(matchesBinding(e,'statusBacklog')){if(statusShortcut('backlog'))e.preventDefault()}
+  else if(matchesBinding(e,'statusDone')){if(statusShortcut('done'))e.preventDefault()}
   else if(matchesBinding(e,'sort')&&listVisible){e.preventDefault();document.getElementById('sortSelect')?.focus()}
 });
 function highlightRow(){
   const localIdx=focusIdx-currentPage*PAGE;
-  document.querySelectorAll('#tableBody tr').forEach((tr,i)=>{tr.classList.toggle('focused',i===localIdx)});
-  const row=document.querySelector(`#tableBody tr:nth-child(${localIdx+1})`);
+  document.querySelectorAll('#tableBody tr[data-idx]').forEach(tr=>{tr.classList.toggle('focused',+tr.dataset.idx===focusIdx)});
+  const row=document.querySelector(`#tableBody tr[data-idx="${focusIdx}"]`);
   if(row)row.scrollIntoView({block:'nearest'});
 }
 
