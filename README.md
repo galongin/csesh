@@ -214,6 +214,46 @@ csesh web                     # visual review in the dashboard
 
 Nothing is ever deleted directly. Everything goes to trash with a manifest. Restore anytime with `csesh trash restore <id>`. The dashboard automatically reflects classification — the Refresh button re-fetches and re-classifies all sessions.
 
+### Status: your backlog across sessions
+
+Every session can carry a personal workflow **status**, separate from the cleanup tiers above:
+
+| Status | Meaning |
+|---|---|
+| **Backlog** | Not finished, not being worked on right now |
+| **WIP** | What you are working on now |
+| **Done** | Finished — out of your way, nothing is deleted |
+| **! Important** | A flag, independent of status (an important item can still sit in the backlog) |
+
+New sessions don't need sorting by hand. With no status set, **Keep** and **Review** sessions count as **Backlog**. **Suggested** and **Auto-delete** sessions are *unsorted* and stay out of your view. Setting a status always wins, and `clear` returns a session to that default. Statuses are stored in `metadata.json` like titles and tags, never in the JSONL, and the classifier and `cleanup` never look at them.
+
+```bash
+csesh status <id> wip            # backlog | wip | done | clear
+csesh important <id>             # toggle (or: on / off)
+csesh list --status backlog,wip  # also: done, unsorted; --important
+csesh resume                     # picker shows Backlog + WIP by default (--all for everything)
+```
+
+The dashboard opens on **My view**: WIP, then Backlog, then Done (collapsed), each sorted by last activity. Keys: `w` WIP, `b` Backlog, `d` Done, `i` Important. They act on the selected rows, the focused row, or the open session, and can be rebound in the `?` help.
+
+### Multiple machines
+
+You can work on several machines and still see every session in one place. Add your other (Linux) machines as **remotes**, and csesh pulls a read-only copy of their sessions over `rsync` + `ssh`:
+
+```bash
+csesh remote add build-gw alice@10.0.0.5 --alias build-gw.corp.example.com
+csesh remote add lab-box  alice@10.0.0.6
+csesh remote sync               # all remotes (or: csesh remote sync lab-box)
+csesh remote list               # last sync, session counts, errors
+csesh list --host lab-box        # every session has a host; 'local' = this machine
+csesh remote rm lab-box --purge  # --purge also deletes the local copy
+```
+
+- The machine list lives in `~/.claude/tools/csesh/remotes.json`, which you can edit by hand. You can also add and remove machines from the dashboard (**⚙ Machines**) and sync them with **⟳ Sync remotes**.
+- It is **pull-only**: nothing is ever written to the remote machine. Only top-level `~/.claude/projects/*/*.jsonl` files are copied, into `~/.claude/tools/csesh/remotes/<name>/`, and the copy mirrors deletions.
+- Your `~/.ssh/config` applies (jump hosts, keys). ssh runs in `BatchMode`, so a machine that needs a password or is unreachable shows an error instead of hanging. Set up key-based login first.
+- Remote sessions are **read-only** in csesh: they are never trashed, cleaned up or slug-renamed. Status, tags, notes and titles for them are stored on this machine. `csesh resume` resumes a remote session over `ssh -t`, and the dashboard shows a copyable command.
+
 ### Web dashboard
 
 `csesh web` launches a full interactive dashboard:
@@ -228,9 +268,11 @@ Nothing is ever deleted directly. Everything goes to trash with a manifest. Rest
 - **Custom title sync**: renamed sessions appear natively in `claude --resume` picker
 - Streamer mode: blur sensitive paths for screen recordings
 - Dark/light/auto theme
-- Keyboard shortcuts: `j/k` navigate, `g` dashboard, `Cmd+F` search in conversation, `f` favorite, `t` trash
+- **My view** (default): WIP / Backlog / Done groups, status card in the sidebar, status buttons in the detail view, batch status
+- **Machines**: host column and filter, per-machine sync health, add / remove / sync remotes
+- Keyboard shortcuts: `j/k` navigate, `g` dashboard, `Cmd+F` search in conversation, `f` favorite, `t` trash, `w`/`b`/`d` WIP / Backlog / Done, `i` important
 
-**Everything runs locally on `127.0.0.1`.** No external requests. The three front-end libraries (Chart.js, marked, DOMPurify) are vendored locally.
+**Everything runs locally on `127.0.0.1`.** No external requests, except the `ssh`/`rsync` connections you start with **Sync remotes** (or `csesh remote sync`). The three front-end libraries (Chart.js, marked, DOMPurify) are vendored locally.
 
 ---
 
@@ -262,14 +304,17 @@ csesh has **zero npm dependencies**. The three libraries that most CLI tools dep
 
 | Command | Description |
 |---|---|
-| `csesh list` | List sessions (filter by tier, tag, project, favorites) |
+| `csesh list` | List sessions (filter by tier, tag, project, favorites, `--status`, `--important`, `--host`) |
 | `csesh show <id>` | Full session detail with metadata, tokens, cost |
 | `csesh analyze [id]` | Deep analysis: tools, thinking, files, auto-tags |
 | `csesh search <query>` | Full-text search with project and date filtering |
 | `csesh stats` | Aggregated statistics across all sessions |
 | `csesh cost` | Cost breakdown: today / week / month / all-time + sparkline |
 | `csesh cleanup` | Interactive trash by tier (dry-run available) |
-| `csesh resume` | Interactive picker to resume a session in Claude Code |
+| `csesh resume` | Interactive picker to resume a session (Backlog + WIP by default; `--all`, `--status`, `--host`; remote sessions resume over ssh) |
+| `csesh status <id> <backlog\|wip\|done\|clear>` | Set workflow status (`clear` = back to the tier default) |
+| `csesh important <id> [on\|off]` | Flag / unflag a session as important (toggles if omitted) |
+| `csesh remote list\|add\|rm\|sync` | Manage remote machines and pull their sessions |
 | `csesh rename <id> <title>` | Rename session slug (syncs with `claude --resume`) |
 | `csesh tag <id> <tag>` | Add a tag to a session |
 | `csesh title <id> <title>` | Set a custom display title |
@@ -316,9 +361,10 @@ skills/csesh/
 ### Data safety principles
 
 1. **Original JSONL files are never deleted.** Cleanup moves to trash with a manifest.
-2. **Metadata is stored in a sidecar.** Titles, tags, favorites, notes live in `metadata.json`, not in the JSONL.
+2. **Metadata is stored in a sidecar.** Titles, tags, favorites, notes, statuses live in `metadata.json`, not in the JSONL.
 3. **Rename creates a backup.** `csesh rename` writes a `.bak` before modifying the slug, using atomic write (temp + rename).
-4. **Uninstall leaves no trace.** Remove csesh and your Claude Code data is exactly as it was.
+4. **Remote machines are read-only.** Sync only pulls copies; csesh never writes to, trashes or renames sessions on another machine.
+5. **Uninstall leaves no trace.** Remove csesh and your Claude Code data is exactly as it was.
 
 ---
 
@@ -331,14 +377,16 @@ The web server exposes a full REST API at `http://localhost:<port>/api/`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/sessions` | List sessions. Params: `project`, `tier`, `tag`, `favorite`, `sort`, `q`, `limit`, `offset` |
-| `GET` | `/api/sessions/:id` | Session detail (triggers deep analysis if not cached) |
+| `GET` | `/api/sessions` | List sessions. Params: `project`, `tier`, `tag`, `favorite`, `status` (`backlog`, `wip`, `done`, `unsorted`, comma list), `important`, `host`, `sort`, `q`, `limit`, `offset`. Each session includes `status` (effective), `statusExplicit`, `important`, `host`, `remote` |
+| `GET` | `/api/sessions/:id` | Session detail (triggers deep analysis if not cached; remote sessions include `resumeCommand`) |
 | `GET` | `/api/sessions/:id/messages` | Conversation messages with rich content blocks |
 | `PATCH` | `/api/sessions/:id/meta` | Update title / notes (also renames JSONL slug) |
 | `POST` | `/api/sessions/:id/tags` | Add a tag |
 | `DELETE` | `/api/sessions/:id/tags/:tag` | Remove a tag |
 | `POST` | `/api/sessions/:id/favorite` | Toggle favorite |
 | `POST` | `/api/sessions/:id/tier` | Override tier (1--4) |
+| `POST` | `/api/sessions/:id/status` | Set status `{ "status": "backlog" \| "wip" \| "done" \| null }` (`null` = back to default) |
+| `POST` | `/api/sessions/:id/important` | Set `{ "important": true \| false }`, or `{}` to toggle |
 | `GET` | `/api/stats` | Aggregated statistics |
 | `GET` | `/api/projects` | Project breakdown |
 | `GET` | `/api/search` | Full-text search. Param: `q` |
@@ -346,6 +394,12 @@ The web server exposes a full REST API at `http://localhost:<port>/api/`.
 | `POST` | `/api/trash/:id` | Trash a session |
 | `POST` | `/api/batch/trash` | Batch trash `{ "ids": [...] }` |
 | `POST` | `/api/batch/tag` | Batch tag `{ "ids": [...], "tag": "..." }` |
+| `POST` | `/api/batch/status` | Batch status `{ "ids": [...], "status": "..." \| null }` |
+| `POST` | `/api/batch/important` | Batch important `{ "ids": [...], "important": true \| false }` |
+| `GET` | `/api/remotes` | This machine + remotes with session counts and last sync |
+| `POST` | `/api/remotes` | Add a remote `{ "name": "...", "target": "user@host", "aliases": [...] }` |
+| `DELETE` | `/api/remotes/:name` | Remove a remote (`?purge=true` also deletes the local copy) |
+| `POST` | `/api/remotes/sync` | Sync remotes `{ "names": [...] }` (omit for all) |
 | `POST` | `/api/batch/trash-delete` | Batch permanent delete from trash |
 | `POST` | `/api/batch/restore` | Batch restore from trash |
 | `GET` | `/api/trash` | List trashed sessions |
@@ -361,6 +415,7 @@ The web server exposes a full REST API at `http://localhost:<port>/api/`.
 - **Binds to `127.0.0.1` only** -- the dashboard is never exposed to the network
 - **CORS strict** -- only same-origin requests accepted
 - **Body limit** -- 1 MB max request body
+- **Remote endpoints** -- adding/removing/syncing machines requires a JSON body from a localhost origin; ssh targets are validated (no option injection)
 - **DOMPurify** -- all HTML sanitized before rendering
 - **No CDN, no external requests** -- everything served from local vendored files
 - **npm Trusted Publishing** -- published via GitHub Actions OIDC (no stored tokens)
