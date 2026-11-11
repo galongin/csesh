@@ -149,6 +149,24 @@ input:focus,textarea:focus{border-color:var(--accent)}
 .tier-row.active{color:var(--text-1);font-weight:600}
 .tab-sep{width:1px;background:var(--border);margin:4px 4px}
 
+/* Machines (remote hosts) */
+.host{font-size:.72rem;color:var(--text-3);font-family:var(--mono)}
+.host.remote{color:var(--purple)}
+.mach-row .dot.never{background:var(--text-3)}
+.sb-actions{display:flex;gap:6px;margin-top:6px}
+.sb-actions .btn{flex:1;justify-content:center;padding:3px 6px;font-size:.72rem}
+#machinesModal{position:fixed;inset:0;background:var(--shadow-modal);z-index:300;display:none;align-items:center;justify-content:center}
+#machinesModal .modal{background:var(--bg-1);border:1px solid var(--border);border-radius:12px;padding:24px;max-width:640px;width:94%;max-height:86vh;overflow-y:auto}
+#machinesModal h3{margin-bottom:4px;font-size:1rem}
+.mach-item{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:10px 0;border-bottom:1px solid var(--border-subtle);font-size:.8rem}
+.mach-item .meta{color:var(--text-3);font-size:.72rem}
+.mach-item .err{color:var(--red);font-size:.72rem;grid-column:1/-1;word-break:break-word}
+.mach-item .acts{display:flex;gap:6px;align-items:start}
+.mach-form{display:grid;grid-template-columns:1fr 1.6fr;gap:8px;margin-top:14px}
+.mach-form input{font-size:.8rem}
+.mach-form .full{grid-column:1/-1}
+.mach-form .err{color:var(--red);font-size:.75rem;min-height:1em}
+
 /* Tag chips */
 .tag{display:inline-flex;align-items:center;gap:3px;font-size:.7rem;padding:2px 8px;border-radius:10px;background:var(--bg-3);color:var(--purple);font-weight:500;margin:1px}
 .tag .x{cursor:pointer;opacity:.5;margin-left:2px}.tag .x:hover{opacity:1}
@@ -417,8 +435,10 @@ input:focus,textarea:focus{border-color:var(--accent)}
             <option value="messages">Sort: Messages</option>
             <option value="tier">Sort: Tier</option>
             <option value="status">Sort: Status</option>
+            <option value="host">Sort: Host</option>
             <option value="project">Sort: Project</option>
           </select>
+          <select id="hostSelect" onchange="setHost(this.value)" style="font-size:.8rem" title="Machine"></select>
           <input type="text" id="filterInput" placeholder="Filter..." oninput="currentPage=0;renderActive()" style="width:180px;font-size:.8rem">
         </div>
       </div>
@@ -429,6 +449,7 @@ input:focus,textarea:focus{border-color:var(--accent)}
         <thead><tr>
           <th style="width:30px"><input type="checkbox" class="chk" onchange="toggleAll(this.checked)"></th>
           <th onclick="sortBy('date')">Date</th>
+          <th onclick="sortBy('host')">Host</th>
           <th onclick="sortBy('project')">Project</th>
           <th onclick="sortBy('title')">Title</th>
           <th onclick="sortBy('messages')">Msgs</th>
@@ -499,6 +520,24 @@ input:focus,textarea:focus{border-color:var(--accent)}
 
 <div id="toast"></div>
 
+<div id="machinesModal" onclick="this.style.display='none'">
+  <div class="modal" onclick="event.stopPropagation()">
+    <h3>Machines</h3>
+    <div style="font-size:.72rem;color:var(--text-3);margin-bottom:8px">Sessions from remote machines are pulled read-only over ssh (rsync). Your <code>~/.ssh/config</code> applies; key-based login is required. Config file: <code id="remotesFilePath">~/.claude/tools/csesh/remotes.json</code></div>
+    <div id="machinesList"></div>
+    <form class="mach-form" onsubmit="event.preventDefault();addMachine()">
+      <input id="machName" placeholder="Name (e.g. build-gw)" autocomplete="off" required>
+      <input id="machTarget" placeholder="ssh target (e.g. alice@10.0.0.5)" autocomplete="off" required>
+      <input id="machAliases" class="full" placeholder="Aliases, comma-separated (optional, e.g. build-gw.corp.example.com)" autocomplete="off">
+      <div class="err full" id="machErr"></div>
+      <div class="full" style="display:flex;justify-content:space-between;gap:8px">
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('machinesModal').style.display='none'">Close</button>
+        <button type="submit" class="btn btn-sm btn-primary">Add machine</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div id="kbHelp" onclick="this.style.display='none'">
   <div class="modal" onclick="event.stopPropagation()" style="max-width:440px">
     <h3>Keyboard Shortcuts</h3>
@@ -564,6 +603,7 @@ const STATUS_ORDER=['wip','backlog','done'];
 const statusNames={wip:'WIP',backlog:'Backlog',done:'Done'};
 const STATUS_TABS=['mine','wip','backlog','done','important'];
 let doneCollapsed=true;
+let machines={local:null,remotes:[],syncing:false},currentHost='',syncing=false;
 
 // ── API ──
 async function api(p){try{const r=await fetch(p);if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}catch(e){toast('API error: '+e.message,'error');throw e}}
@@ -575,6 +615,8 @@ async function apiDel(p){try{const r=await fetch(p,{method:'DELETE'});if(!r.ok)t
 function fmtBytes(b){if(!b)return'0 B';const u=['B','KB','MB','GB'];const i=Math.min(Math.floor(Math.log(b)/Math.log(1024)),u.length-1);return(b/Math.pow(1024,i)).toFixed(i===0?0:1)+' '+u[i]}
 function fmtDur(ms){if(!ms||ms<0)return'0s';if(ms<60000)return Math.round(ms/1000)+'s';if(ms<3600000)return Math.round(ms/60000)+'m';const h=Math.floor(ms/3600000),m=Math.round((ms%3600000)/60000);return m>0?h+'h '+m+'m':h+'h'}
 function esc(s){if(!s)return'';const d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function escAttr(s){return esc(String(s??'')).replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function timeAgoShort(iso){if(!iso)return'never';const m=Math.round((Date.now()-new Date(iso))/60000);if(m<1)return'just now';if(m<60)return m+'m ago';const h=Math.round(m/60);if(h<48)return h+'h ago';return Math.round(h/24)+'d ago'}
 function tierBadge(t){return`<span class="tier ${tierClasses[t]||''}">${tierNames[t]||'?'}</span>`}
 function statusBadge(s){
   const imp=s.important?'<span class="imp" title="Important">!</span>':'';
@@ -587,10 +629,11 @@ function toast(msg,type='success'){const t=document.getElementById('toast');cons
 // ── Init ──
 async function init(){
   try{
-    const[sessData,projData,statsData]=await Promise.all([api('/api/sessions?limit=5000'),api('/api/projects'),api('/api/stats')]);
+    const[sessData,projData,statsData]=await Promise.all([api('/api/sessions?limit=100000'),api('/api/projects'),api('/api/stats')]);
     allSessions=sessData.sessions||[];
     stats=statsData;
     lastDataRefresh=new Date();
+    await loadMachines();
     renderProjects(projData);
     renderOverview();
     document.getElementById('loading').style.display='none';
@@ -647,7 +690,97 @@ function renderStatusCard(){
     row('wip','WIP','accent',c.wip)+
     row('backlog','Backlog','purple',c.backlog)+
     row('done','Done','green',c.done)+
-    `<div class="tier-row clickable" onclick="showStatusTab('mine')" style="color:var(--text-3)"><span>My view</span><span>${c.wip+c.backlog+c.done}</span></div>`;
+    `<div class="tier-row clickable" onclick="showStatusTab('mine')" style="color:var(--text-3)"><span>My view</span><span>${c.wip+c.backlog+c.done}</span></div>`+
+    renderMachinesCard();
+}
+
+// ── Machines (remote hosts) ──
+async function loadMachines(){
+  try{machines=await api('/api/remotes')}catch{machines={local:null,remotes:[]}}
+  if(currentHost&&currentHost!==machines.local?.name&&!machines.remotes.some(r=>r.name===currentHost))currentHost='';
+  renderHostSelect();
+}
+function hostCounts(){const c={};for(const s of allSessions)c[s.host]=(c[s.host]||0)+1;return c}
+function renderMachinesCard(){
+  if(!machines.local)return'';
+  const cnt=hostCounts();
+  const row=(name,label,dotCls,dotStyle,title)=>`<div class="tier-row clickable mach-row${currentHost===name?' active':''}" onclick="setHost(currentHost==='${name}'?'':'${name}',true)" title="${escAttr(title)}"><span><span class="dot ${dotCls}" style="${dotStyle}"></span>${esc(label)}</span><span>${cnt[name]||0}</span></div>`;
+  let h='<div class="sb-section-title" style="margin-top:8px">Machines</div>';
+  h+=row(machines.local.name,machines.local.name+' (this)','','background:var(--accent)','This machine');
+  for(const r of machines.remotes){
+    const st=r.lastSync;
+    const dot=!st?'never':'';
+    const color=!st?'':st.ok?'background:var(--green)':'background:var(--red)';
+    const title=!st?`${r.target} — never synced`:st.ok?`${r.target} — synced ${timeAgoShort(st.at)}`:`${r.target} — last sync failed ${timeAgoShort(st.at)}: ${st.error}`+(st.lastOkAt?` (last good ${timeAgoShort(st.lastOkAt)})`:'');
+    h+=row(r.name,r.name,dot,color,title);
+  }
+  h+=`<div class="sb-actions"><button class="btn btn-sm" id="syncBtn" onclick="syncMachines()" ${syncing||!machines.remotes.length?'disabled':''} title="Pull sessions from all remote machines">${syncing?'Syncing…':'⟳ Sync remotes'}</button><button class="btn btn-sm" onclick="openMachines()" title="Add / remove machines">⚙ Machines</button></div>`;
+  return h;
+}
+function renderHostSelect(){
+  const sel=document.getElementById('hostSelect');if(!sel)return;
+  const names=[machines.local?.name,...machines.remotes.map(r=>r.name)].filter(Boolean);
+  sel.innerHTML='<option value="">All machines</option>'+names.map(n=>`<option value="${escAttr(n)}"${n===currentHost?' selected':''}>${esc(n)}${n===machines.local?.name?' (this)':''}</option>`).join('');
+  sel.style.display=machines.remotes.length?'':'none';
+}
+function setHost(name,fromSidebar){
+  currentHost=name||'';currentPage=0;focusIdx=-1;renderHostSelect();
+  if(fromSidebar&&(document.getElementById('listView').style.display==='none'||document.getElementById('detail').style.display!=='none')){document.getElementById('detail').style.display='none';showList()}
+  else renderTable();
+  updateSidebar();
+}
+async function syncMachines(names){
+  if(syncing)return;
+  syncing=true;updateSidebar();renderMachinesModal();
+  toast(`Syncing ${names?names.join(', '):'all remote machines'}…`);
+  try{
+    const r=await fetch('/api/remotes/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(names?{names}:{})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
+    const failed=d.results.filter(x=>!x.ok);
+    const sess=await api('/api/sessions?limit=100000');allSessions=sess.sessions||[];
+    await loadMachines();
+    if(failed.length)toast(`Sync failed for ${failed.map(x=>x.name).join(', ')}: ${failed[0].error}`,'error');
+    else toast(`Synced ${d.results.length} machine${d.results.length>1?'s':''} · ${d.results.reduce((a,x)=>a+x.sessions,0)} remote sessions`);
+  }catch(e){toast('Sync failed: '+e.message,'error')}
+  finally{syncing=false;updateSidebar();renderMachinesModal();if(document.getElementById('listView').style.display!=='none')renderTable()}
+}
+function openMachines(){renderMachinesModal();document.getElementById('machErr').textContent='';document.getElementById('machinesModal').style.display='flex';setTimeout(()=>document.getElementById('machName').focus(),50)}
+function renderMachinesModal(){
+  const el=document.getElementById('machinesList');if(!el)return;
+  const cnt=hostCounts();
+  if(!machines.remotes.length){el.innerHTML='<div style="padding:10px 0;color:var(--text-3);font-size:.8rem">No remote machines yet — add one below.</div>';return}
+  el.innerHTML=machines.remotes.map(r=>{
+    const st=r.lastSync;
+    const status=!st?'never synced':st.ok?`<span style="color:var(--green)">✓</span> synced ${timeAgoShort(st.at)} · ${(st.durationMs/1000).toFixed(1)}s`:`<span style="color:var(--red)">✗</span> failed ${timeAgoShort(st.at)}${st.lastOkAt?` · last good ${timeAgoShort(st.lastOkAt)}`:''}`;
+    return`<div class="mach-item">
+      <div><b>${esc(r.name)}</b> <span class="host">${esc(r.target)}</span>${r.aliases?.length?`<div class="meta">aka ${esc(r.aliases.join(', '))}</div>`:''}<div class="meta">${cnt[r.name]||0} sessions · ${status}</div></div>
+      <div class="acts"><button class="btn btn-sm" ${syncing?'disabled':''} onclick="syncMachines(['${escAttr(r.name)}'])">${syncing?'Syncing…':'⟳ Sync'}</button><button class="btn btn-sm btn-danger" onclick="removeMachine('${escAttr(r.name)}')">Remove</button></div>
+      ${st&&!st.ok?`<div class="err">${esc(st.error)}</div>`:''}
+    </div>`}).join('');
+}
+async function addMachine(){
+  const name=document.getElementById('machName').value.trim(),target=document.getElementById('machTarget').value.trim(),aliases=document.getElementById('machAliases').value;
+  const err=document.getElementById('machErr');err.textContent='';
+  try{
+    const r=await fetch('/api/remotes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,target,aliases})});
+    const d=await r.json();
+    if(!r.ok){err.textContent=d.error||`HTTP ${r.status}`;return}
+    ['machName','machTarget','machAliases'].forEach(id=>document.getElementById(id).value='');
+    await loadMachines();renderMachinesModal();updateSidebar();
+    toast(`Added ${name} — syncing…`);
+    syncMachines([name]);
+  }catch(e){err.textContent=e.message}
+}
+async function removeMachine(name){
+  if(!confirm(`Remove machine "${name}"?\n\nIts sessions disappear from csesh. Statuses you set are kept in metadata.json and come back if you add it again.`))return;
+  const purge=confirm(`Also delete the local copy of ${name}'s session files?\n\nOK = delete the copy, Cancel = keep it on disk`);
+  await apiDel(`/api/remotes/${encodeURIComponent(name)}${purge?'?purge=true':''}`);
+  const sess=await api('/api/sessions?limit=100000');allSessions=sess.sessions||[];
+  if(currentHost===name)currentHost='';
+  await loadMachines();renderMachinesModal();updateSidebar();
+  if(document.getElementById('listView').style.display!=='none')renderTable();
+  toast(`Removed ${name}`);
 }
 function showStatusTab(tab){
   currentTab=tab;currentPage=0;focusIdx=-1;
@@ -686,11 +819,12 @@ function renderOverview(){
 }
 async function refreshData(){
   try{
-    const[sessData,projData,statsData]=await Promise.all([api('/api/sessions?limit=5000'),api('/api/projects'),api('/api/stats')]);
+    const[sessData,projData,statsData]=await Promise.all([api('/api/sessions?limit=100000'),api('/api/projects'),api('/api/stats')]);
     allSessions=sessData.sessions||[];
     stats=statsData;
     lastDataRefresh=new Date();
     renderProjects(projData);
+    await loadMachines();
     renderOverview();
     updateSidebar();
     if(document.getElementById('listView').style.display!=='none')renderTable();
@@ -790,6 +924,7 @@ function statusRank(x){const i=STATUS_ORDER.indexOf(x.status);return i<0?STATUS_
 function getFiltered(ignoreCollapse=false){
   let s=[...allSessions];
   if(currentProject)s=s.filter(x=>x.slug===currentProject);
+  if(currentHost)s=s.filter(x=>x.host===currentHost);
   if(currentTab==='keep')s=s.filter(x=>x.tier===4);
   else if(currentTab==='review')s=s.filter(x=>x.tier===3);
   else if(currentTab==='suggested')s=s.filter(x=>x.tier===2);
@@ -799,7 +934,7 @@ function getFiltered(ignoreCollapse=false){
   else if(currentTab==='wip'||currentTab==='backlog'||currentTab==='done')s=s.filter(x=>x.status===currentTab);
   else if(currentTab==='important')s=s.filter(x=>x.important);
   const q=document.getElementById('filterInput')?.value?.toLowerCase();
-  if(q)s=s.filter(x=>(x.title||'').toLowerCase().includes(q)||(x.displayTitle||'').toLowerCase().includes(q)||(x.shortProject||'').toLowerCase().includes(q)||(x.gitBranch||'').toLowerCase().includes(q)||(x.id||'').toLowerCase().includes(q)||(x.tags||[]).some(t=>t.includes(q))||(x.autoTags||[]).some(t=>t.includes(q)));
+  if(q)s=s.filter(x=>(x.title||'').toLowerCase().includes(q)||(x.displayTitle||'').toLowerCase().includes(q)||(x.shortProject||'').toLowerCase().includes(q)||(x.gitBranch||'').toLowerCase().includes(q)||(x.host||'').toLowerCase().includes(q)||(x.id||'').toLowerCase().includes(q)||(x.tags||[]).some(t=>t.includes(q))||(x.autoTags||[]).some(t=>t.includes(q)));
   switch(currentSort){
     case'size':s.sort((a,b)=>b.fileSizeBytes-a.fileSizeBytes);break;
     case'messages':s.sort((a,b)=>(b.userMessageCount+b.assistantMessageCount)-(a.userMessageCount+a.assistantMessageCount));break;
@@ -807,6 +942,7 @@ function getFiltered(ignoreCollapse=false){
     case'project':s.sort((a,b)=>(a.shortProject||'').localeCompare(b.shortProject||''));break;
     case'title':s.sort((a,b)=>(a.displayTitle||a.title||'').localeCompare(b.displayTitle||b.title||''));break;
     case'status':s.sort((a,b)=>statusRank(a)-statusRank(b)||byRecent(a,b));break;
+    case'host':s.sort((a,b)=>(a.remote-b.remote)||(a.host||'').localeCompare(b.host||'')||byRecent(a,b));break;
     default:s.sort(byRecent)
   }
   // My view: group WIP → Backlog → Done (stable sort keeps the chosen order inside each group)
@@ -819,7 +955,7 @@ function renderTable(){
   const grouped=currentTab==='mine';
   const groupCounts={wip:0,backlog:0,done:0};
   if(grouped)for(const x of getFiltered(true))groupCounts[x.status]++;
-  const groupRow=(st,cont)=>`<tr class="grp-row" onclick="${st==='done'?'toggleDoneGroup()':''}"><td colspan="9">${st==='done'?(doneCollapsed?'▸ ':'▾ '):''}${statusNames[st]}<span class="grp-count">${groupCounts[st]}${cont?' · continued':''}</span></td></tr>`;
+  const groupRow=(st,cont)=>`<tr class="grp-row" onclick="${st==='done'?'toggleDoneGroup()':''}"><td colspan="10">${st==='done'?(doneCollapsed?'▸ ':'▾ '):''}${statusNames[st]}<span class="grp-count">${groupCounts[st]}${cont?' · continued':''}</span></td></tr>`;
   let html=page.map((s,i)=>{
     let hdr='';
     if(grouped&&(i===0||page[i-1].status!==s.status))hdr=groupRow(s.status,i===0&&start>0&&f[start-1]?.status===s.status);
@@ -832,17 +968,18 @@ function renderTable(){
     return hdr+`<tr class="row-click${sel?' selected':''}" data-idx="${idx}" data-id="${s.id}" onclick="rowClick('${s.id}',event)">
       <td><input type="checkbox" class="chk" ${sel?'checked':''} onchange="toggleSelect('${s.id}',this.checked)" onclick="event.stopPropagation()"></td>
       <td>${date}</td>
+      <td><span class="host${s.remote?' remote':''}" title="${s.remote?'Remote (read-only copy)':'This machine'}">${esc(s.host||'')}</span></td>
       <td class="sensitive">${esc((s.shortProject||'').slice(0,18))}</td>
       <td>${title} ${tags}</td>
       <td>${s.userMessageCount+s.assistantMessageCount}</td>
       <td>${fmtBytes(s.fileSizeBytes)}</td>
       <td>${tierBadge(s.tier)}</td>
       <td>${statusBadge(s)}</td>
-      <td><button class="btn-icon" title="Trash" onclick="event.stopPropagation();trashOne('${s.id}')">🗑</button></td>
+      <td>${s.remote?'<span class="btn-icon" title="Remote copy — trash it on '+escAttr(s.host)+'" style="opacity:.3;cursor:default">🗑</span>':`<button class="btn-icon" title="Trash" onclick="event.stopPropagation();trashOne('${s.id}')">🗑</button>`}</td>
     </tr>`}).join('');
   // My view: show the (collapsed) Done group header at the end of the last page
   if(grouped&&doneCollapsed&&groupCounts.done>0&&start+PAGE>=f.length)html+=groupRow('done',false);
-  if(!page.length&&!(grouped&&groupCounts.done))html=`<tr><td colspan="9" style="text-align:center;color:var(--text-3);padding:24px">No sessions here${STATUS_TABS.includes(currentTab)?' — mark sessions with '+[['statusWip','WIP'],['statusBacklog','Backlog'],['statusDone','Done'],['important','Important']].map(([a,l])=>`<span class="kb-key">${keyHint(a)}</span> ${l}`).join(', '):''}</td></tr>`;
+  if(!page.length&&!(grouped&&groupCounts.done))html=`<tr><td colspan="10" style="text-align:center;color:var(--text-3);padding:24px">No sessions here${STATUS_TABS.includes(currentTab)?' — mark sessions with '+[['statusWip','WIP'],['statusBacklog','Backlog'],['statusDone','Done'],['important','Important']].map(([a,l])=>`<span class="kb-key">${keyHint(a)}</span> ${l}`).join(', '):''}</td></tr>`;
   body.innerHTML=html;
   // Pagination
   const totalPages=Math.ceil(f.length/PAGE),pag=document.getElementById('pag');
@@ -857,7 +994,16 @@ function toggleSelect(id,checked){if(checked)selectedIds.add(id);else selectedId
 function toggleAll(checked){const f=getFiltered().slice(currentPage*PAGE,(currentPage+1)*PAGE);f.forEach(s=>{if(checked)selectedIds.add(s.id);else selectedIds.delete(s.id)});renderTable()}
 function clearSelection(){selectedIds.clear();renderTable()}
 function updateActionBar(){const bar=document.getElementById('actionBar');if(selectedIds.size>0){bar.style.display='flex';document.getElementById('selCount').textContent=selectedIds.size}else{bar.style.display='none'}}
-async function batchTrash(){if(!confirm(`Trash ${selectedIds.size} sessions?`))return;await apiPost('/api/batch/trash',{ids:[...selectedIds]});allSessions=allSessions.filter(s=>!selectedIds.has(s.id));selectedIds.clear();renderTable();toast(`Trashed sessions`)}
+async function batchTrash(){
+  const sel=allSessions.filter(s=>selectedIds.has(s.id));
+  const local=sel.filter(s=>!s.remote),remote=sel.length-local.length;
+  if(!local.length){toast('Remote sessions are read-only copies — trash them on their machine','error');return}
+  if(!confirm(`Trash ${local.length} session${local.length>1?'s':''}?`+(remote?`\n\n${remote} remote session${remote>1?'s':''} will be skipped (read-only copies).`:'')))return;
+  const r=await apiPost('/api/batch/trash',{ids:local.map(s=>s.id)});
+  const done=new Set(local.map(s=>s.id));
+  allSessions=allSessions.filter(s=>!done.has(s.id));selectedIds.clear();renderTable();updateSidebar();
+  toast(`Trashed ${r.trashed} session${r.trashed===1?'':'s'}`+(remote?` · skipped ${remote} remote`:''))
+}
 function batchTag(){
   const bar=document.getElementById('actionBar');
   if(bar.querySelector('.batch-tag-input'))return;
@@ -865,7 +1011,7 @@ function batchTag(){
   inp.type='text';inp.placeholder='Tag name...';inp.className='batch-tag-input';inp.style.cssText='width:120px;font-size:.8rem;padding:4px 8px;border-radius:var(--radius);border:1px solid var(--accent);background:var(--bg-2);color:var(--text-1)';
   bar.insertBefore(inp,bar.querySelector('.btn-sm:nth-child(3)'));
   inp.focus();
-  const doTag=async()=>{const tag=inp.value.trim();inp.remove();if(!tag)return;await apiPost('/api/batch/tag',{ids:[...selectedIds],tag});selectedIds.clear();const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];renderTable();toast(`Tagged with #${tag}`)};
+  const doTag=async()=>{const tag=inp.value.trim();inp.remove();if(!tag)return;await apiPost('/api/batch/tag',{ids:[...selectedIds],tag});selectedIds.clear();const d=await api('/api/sessions?limit=100000');allSessions=d.sessions||[];renderTable();toast(`Tagged with #${tag}`)};
   inp.addEventListener('keydown',e=>{if(e.key==='Enter')doTag();if(e.key==='Escape')inp.remove()});
   inp.addEventListener('blur',()=>setTimeout(()=>inp.parentNode&&inp.remove(),200));
 }
@@ -913,7 +1059,7 @@ async function batchStatus(v){
   if(v==='imp-on'||v==='imp-off')await apiPost('/api/batch/important',{ids,important:v==='imp-on'});
   else await apiPost('/api/batch/status',{ids,status:v==='clear'?null:v});
   selectedIds.clear();
-  const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];
+  const d=await api('/api/sessions?limit=100000');allSessions=d.sessions||[];
   renderTable();updateSidebar();
   const what={'imp-on':'marked important','imp-off':'unmarked important',clear:'status cleared'}[v]||('marked '+statusNames[v]);
   toast(`${ids.length} session${ids.length>1?'s':''} ${what}`);
@@ -934,6 +1080,20 @@ function statusShortcut(kind){
   if(!id)return false;
   if(kind==='important')toggleImportant(id);else setStatus(id,kind);
   return true;
+}
+
+function remoteResumeSection(s){
+  const cmd=s.resumeCommand||'';
+  const r=machines.remotes.find(m=>m.name===s.host);
+  const synced=r?.lastSync?.lastOkAt?`last synced ${timeAgoShort(r.lastSync.lastOkAt)}`:'';
+  return`<div class="launch-section" style="margin:16px 0;padding:16px;background:var(--bg-2);border-radius:8px;border:1px solid var(--border)">
+      <div style="font-weight:600;margin-bottom:10px;font-size:.9rem">Resume on <span style="color:var(--purple)">${esc(s.host)}</span></div>
+      <div class="launch-row" style="display:flex;align-items:center;gap:8px">
+        <code class="launch-cmd" style="flex:1;padding:8px 12px;background:var(--bg-1);border-radius:6px;font-size:.8rem;font-family:var(--mono);overflow-x:auto;white-space:nowrap">${esc(cmd)}</code>
+        <button class="btn btn-sm" data-cmd="${escAttr(cmd)}" onclick="copyCmd(this.dataset.cmd,this)" title="Copy">Copy</button>
+      </div>
+      <div style="font-size:.7rem;color:var(--text-3);margin-top:6px">This is a read-only copy of a session on ${esc(s.host)}${synced?' ('+synced+')':''}. Status, tags and notes are stored on this machine. Or run <code style="font-size:.65rem">csesh resume</code> and pick it — csesh connects over ssh.</div>
+    </div>`;
 }
 
 // ── Detail ──
@@ -968,6 +1128,7 @@ async function showDetail(id){
     <div class="status-btns" id="statusBtns">${statusButtons(s)}</div>
     <div class="detail-tags">${tags}${autoTags}<input type="text" class="tag-input" placeholder="+tag" onkeydown="if(event.key==='Enter'){addTagToSession('${s.id}',this.value);this.value=''}"></div>
     <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr))">
+      <div class="card"><div class="card-label">Host</div><div class="card-value" style="font-size:.9rem;${s.remote?'color:var(--purple)':''}">${esc(s.host||'')}</div></div>
       <div class="card"><div class="card-label">Project</div><div class="card-value" style="font-size:.9rem">${esc(s.shortProject)}</div></div>
       <div class="card"><div class="card-label">Date</div><div class="card-value" style="font-size:.9rem">${s.firstTimestamp?new Date(s.firstTimestamp).toLocaleDateString():''}</div></div>
       <div class="card"><div class="card-label">Duration</div><div class="card-value">${fmtDur(s.durationMs)}</div></div>
@@ -992,7 +1153,7 @@ async function showDetail(id){
     <div class="detail-notes" style="margin:8px 0">
       <textarea placeholder="Add notes..." onblur="saveNotes('${s.id}',this.value)">${esc(s.notes||'')}</textarea>
     </div>
-    <div class="launch-section" style="margin:16px 0;padding:16px;background:var(--bg-2);border-radius:8px;border:1px solid var(--border)">
+    ${s.remote?remoteResumeSection(s):`<div class="launch-section" style="margin:16px 0;padding:16px;background:var(--bg-2);border-radius:8px;border:1px solid var(--border)">
       <div style="font-weight:600;margin-bottom:10px;font-size:.9rem">Resume in Terminal</div>
       <div class="launch-row" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <code class="launch-cmd" style="flex:1;padding:8px 12px;background:var(--bg-1);border-radius:6px;font-size:.8rem;font-family:var(--mono);overflow-x:auto;white-space:nowrap">cd ${esc(s.cwd||s.project||'~')} && claude --resume ${s.id}</code>
@@ -1005,7 +1166,7 @@ async function showDetail(id){
         <button class="btn btn-sm btn-icon" onclick="openTerm('cd ${(s.cwd||s.project||'~').replace(/'/g,"\\'")} && claude --resume ${s.id} --dangerously-skip-permissions')" title="Open in terminal" style="opacity:.7"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="2 4 6 8 2 12"/><line x1="8" y1="12" x2="14" y2="12"/></svg></button>
       </div>
       <div style="font-size:.7rem;color:var(--text-3);margin-top:6px">Copy or click <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle"><polyline points="2 4 6 8 2 12"/><line x1="8" y1="12" x2="14" y2="12"/></svg> to open in your default terminal. The renamed title appears in the <code style="font-size:.65rem">claude --resume</code> picker.</div>
-    </div>`;
+    </div>`}`;
   loadMessages(id);
 }
 function renderSingleMessage(m){
@@ -1165,7 +1326,7 @@ function updateTrashActionBar(){const bar=document.getElementById('trashActions'
 async function batchRestoreTrash(){
   if(!confirm(`Restore ${trashSelectedIds.size} sessions?`))return;
   for(const id of trashSelectedIds)await apiPost(`/api/restore/${id}`);
-  const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];
+  const d=await api('/api/sessions?limit=100000');allSessions=d.sessions||[];
   trashSelectedIds.clear();trashItems=await api('/api/trash');renderTrashTable();updateTrashActionBar();toast(`Restored sessions`);
 }
 async function batchDeleteTrash(){
@@ -1175,7 +1336,7 @@ async function batchDeleteTrash(){
 }
 async function restoreOne(id){
   await apiPost(`/api/restore/${id}`);
-  const d=await api('/api/sessions?limit=5000');allSessions=d.sessions||[];
+  const d=await api('/api/sessions?limit=100000');allSessions=d.sessions||[];
   showTrash();toast('Session restored');
 }
 async function deleteOne(id){
