@@ -18,6 +18,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, emptyTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, loadMetadata, setTitle as metaSetTitle, addTag as metaAddTag, removeTag as metaRemoveTag, toggleFavorite, setNote, getAllTags, setStatus as metaSetStatus, setImportant as metaSetImportant } from '../lib/metadata.js';
 import { STATUS_LABELS, parseStatusInput, parseStatusFilter, effectiveStatus } from '../lib/status.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeArgv, remoteResumeCommand, REMOTES_FILE, mirrorDir } from '../lib/remotes.js';
 import { formatBytes, formatDuration, formatDate, timeAgo, estimateCost, CLAUDE_DIR, PROJECTS_DIR, TOOL_DIR, CACHE_FILE } from '../lib/utils.js';
 import { getConfig } from '../lib/config.js';
 import { renameSessionSlug, titleToSlug } from '../lib/rename.js';
@@ -104,8 +105,12 @@ program.configureHelp({
 
 // ── Session loading ──────────────────────────────────────────────────────────
 
-async function loadSessions({ project = null, mode = 'fast', showProgress = true, analyze = false } = {}) {
-  const files = await findSessionFiles(project);
+async function loadSessions({ project = null, mode = 'fast', showProgress = true, analyze = false, includeRemotes = true } = {}) {
+  // Remote mirrors are read-only copies: destructive commands pass includeRemotes:false
+  const files = [
+    ...await findSessionFiles(project),
+    ...(includeRemotes ? await findRemoteSessionFiles({ projectSlug: project }) : []),
+  ];
   const results = [];
   let cached = 0;
   let scanned = 0;
@@ -118,14 +123,14 @@ async function loadSessions({ project = null, mode = 'fast', showProgress = true
     const batch = files.slice(i, i + 50);
     const batchResults = await Promise.all(batch.map(async f => {
       const cachedData = await getCached(f.filePath, { requireAnalyzed: analyze });
-      if (cachedData) { cached++; return cachedData; }
+      if (cachedData) { cached++; return tagHost(cachedData, f); }
       try {
         const summary = analyze
           ? await fullScan(f, { analyze: true })
           : await fastScan(f);
         await setCached(f.filePath, summary);
         scanned++;
-        return summary;
+        return tagHost(summary, f);
       } catch (err) {
         console.error(`csesh: scan error: ${err.message}`);
         return null;
@@ -231,7 +236,8 @@ async function paginatedPicker({ sessions, pageSize = 20, title = 'select', proj
       const date = s.lastTimestamp?.slice(0, 10) || '';
 
       console.log(`  ${chalk.dim(num)}  ${fav} ${badge}  ${displayTitle} ${tags}`);
-      console.log(`       ${chalk.dim(s.shortProject)} ${chalk.dim('\u00b7')} ${chalk.dim(date)}`);
+      const where = s.remote ? chalk.magenta(s.host) + ' ' + chalk.dim('\u00b7') + ' ' : '';
+      console.log(`       ${where}${chalk.dim(s.shortProject)} ${chalk.dim('\u00b7')} ${chalk.dim(date)}`);
     }
 
     console.log();
@@ -291,6 +297,7 @@ program
   .option('--favorites', 'Show only favorites')
   .option('--status <status>', 'Filter by status: backlog, wip, done, unsorted (comma list ok)')
   .option('--important', 'Show only sessions flagged important')
+  .option('--host <name>', `Filter by machine (remote name, or 'local')`)
   .option('-n, --limit <n>', 'Limit results', parseInt)
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
@@ -308,6 +315,7 @@ program
       favorite: opts.favorites || null,
       status: opts.status || null,
       important: opts.important || null,
+      host: opts.host || null,
       sort: opts.sort,
       limit: opts.limit || 50,
     });
@@ -325,6 +333,8 @@ program
         status: s.status ?? null,
         statusExplicit: !!s.statusExplicit,
         important: !!s.important,
+        host: s.host,
+        remote: !!s.remote,
         favorite: s.favorite || false,
         tags: s.tags || [],
       }));
@@ -333,16 +343,17 @@ program
     }
 
     const table = new Table({
-      head: ['DATE', 'PROJECT', 'TITLE', 'MSGS', 'SIZE', 'TIER', 'STATUS', 'ID'].map(h => chalk.cyan(h)),
-      colWidths: [18, 16, 38, 6, 8, 18, 12, 10],
+      head: ['DATE', 'HOST', 'PROJECT', 'TITLE', 'MSGS', 'SIZE', 'TIER', 'STATUS', 'ID'].map(h => chalk.cyan(h)),
+      colWidths: [18, 16, 16, 34, 6, 8, 18, 12, 10],
       wordWrap: true,
     });
 
     for (const s of filtered) {
       const fav = s.favorite ? chalk.yellow('\u2605 ') : '';
-      const title = fav + (s.displayTitle || s.title).slice(0, 34);
+      const title = fav + (s.displayTitle || s.title).slice(0, 30);
       table.push([
         formatDate(s.lastTimestamp),
+        s.remote ? chalk.magenta(s.host.slice(0, 14)) : chalk.dim(s.host.slice(0, 14)),
         s.shortProject.slice(0, 14),
         title,
         s.userMessageCount + s.assistantMessageCount,
@@ -936,7 +947,7 @@ program
   .option('--dry-run', 'Show what would be trashed without doing it')
   .option('--tier1-only', 'Only auto-delete tier 1 (100% safe)')
   .action(async (opts) => {
-    const sessions = await loadSessions();
+    const sessions = await loadSessions({ includeRemotes: false });
 
     const tier1 = sessions.filter(s => s.tier === 1);
     const tier2 = sessions.filter(s => s.tier === 2);
@@ -1259,9 +1270,11 @@ program
   .option('--tag <tag>', 'Filter by tag')
   .option('--status <status>', 'Filter by status (default: backlog,wip)')
   .option('--all', 'Show all sessions regardless of status')
+  .option('--host <name>', `Only sessions from this machine (remote name, or 'local')`)
   .action(async (opts) => {
     checkStatusFilter(opts.status);
-    const sessions = await loadSessions({ project: opts.project });
+    let sessions = await loadSessions({ project: opts.project });
+    if (opts.host) sessions = filterSessions(sessions, { host: opts.host, limit: 0 }).sessions;
 
     const result = await paginatedPicker({
       sessions,
@@ -1275,6 +1288,16 @@ program
     if (!result) return;
 
     const selected = result.session;
+    if (selected.remote) {
+      // Session lives on another machine: resume it there over ssh
+      console.log(chalk.green(`  \u2713 Resuming on ${chalk.magenta(selected.host)}: ${selected.displayTitle || selected.title}`));
+      console.log(chalk.dim(`  ${remoteResumeCommand(selected)}`));
+      console.log();
+      const { execFileSync } = await import('child_process');
+      try { execFileSync('ssh', remoteResumeArgv(selected), { stdio: 'inherit' }); }
+      catch { /* non-zero on interrupt / disconnect */ }
+      return;
+    }
     console.log(chalk.green(`  \u2713 Resuming: ${selected.displayTitle || selected.title}`));
     const resumeDir = selected.cwd || selected.project;
     if (resumeDir) console.log(chalk.dim(`  in ${resumeDir}`));
@@ -1304,7 +1327,7 @@ program.command('rename')
 
     // If no ID provided, show interactive picker
     if (!sessionId) {
-      const sessions = await loadSessions({ project: opts.project });
+      const sessions = await loadSessions({ project: opts.project, includeRemotes: false });
 
       const result = await paginatedPicker({
         sessions,
@@ -1446,6 +1469,102 @@ trashCmd.command('empty').description('Permanently delete old trashed sessions')
   });
 
 // ── WEB ──────────────────────────────────────────────────────────────────────
+
+// ── REMOTE MACHINES ──────────────────────────────────────────────────────────
+
+function fmtSyncState(st) {
+  if (!st) return chalk.dim('never synced');
+  const when = timeAgo(st.at);
+  return st.ok ? chalk.green(`✓ ${when}`) : chalk.red(`✗ ${when}: ${st.error}`);
+}
+
+const remoteCmd = program.command('remote').description(`Manage remote machines (config: ${REMOTES_FILE})`);
+
+remoteCmd.command('list').description('List remote machines and their last sync')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    const [remotes, state] = await Promise.all([loadRemotes(), loadRemoteState()]);
+    if (opts.json) {
+      process.stdout.write(JSON.stringify({ local: LOCAL_HOST, remotes: remotes.map(r => ({ ...r, lastSync: state[r.name] || null })) }, null, 2) + '\n');
+      return;
+    }
+    console.log(`\n  ${BRAND} ${chalk.bold('Machines')}  ${chalk.dim(`(this machine: ${LOCAL_HOST})`)}\n`);
+    if (!remotes.length) {
+      console.log(chalk.dim('  No remotes yet. Add one with: csesh remote add <name> <user@host>\n'));
+      return;
+    }
+    const table = new Table({ head: ['NAME', 'TARGET', 'SESSIONS', 'LAST SYNC'].map(h => chalk.cyan(h)), colWidths: [18, 44, 10, 46], wordWrap: true });
+    for (const r of remotes) {
+      const st = state[r.name];
+      table.push([r.name + (r.aliases?.length ? chalk.dim(`\n${r.aliases.join(', ')}`) : ''), r.target, st?.sessions ?? '-', fmtSyncState(st)]);
+    }
+    console.log(table.toString());
+    console.log(chalk.dim(`  Config: ${REMOTES_FILE}\n`));
+  });
+
+remoteCmd.command('add <name> <target>').description('Add a remote machine (target: user@host, as you would ssh to it)')
+  .option('--alias <names>', 'Comma-separated alternative names (e.g. fqdn)')
+  .option('--json', 'Output as JSON')
+  .action(async (name, target, opts) => {
+    if (!name || !target) {
+      console.error(chalk.red('  ✗ Usage: csesh remote add <name> <user@host>'));
+      process.exit(1);
+    }
+    try {
+      const remote = await addRemote({ name, target, aliases: opts.alias ? opts.alias.split(',') : [] });
+      if (opts.json) { process.stdout.write(JSON.stringify(remote, null, 2) + '\n'); return; }
+      console.log(chalk.green(`  ✓ Added ${chalk.bold(name)} → ${target}`));
+      console.log(chalk.dim(`  Run: csesh remote sync ${name}`));
+    } catch (err) {
+      console.error(chalk.red(`  ✗ ${err.message}`));
+      process.exit(1);
+    }
+  });
+
+remoteCmd.command('rm <name>').description('Remove a remote machine (keeps its local copy unless --purge)')
+  .option('--purge', `Also delete the local copy in ${mirrorDir('<name>').replace('/projects', '')}`)
+  .option('--json', 'Output as JSON')
+  .action(async (name, opts) => {
+    if (!name) {
+      console.error(chalk.red('  ✗ Usage: csesh remote rm <name> [--purge]'));
+      process.exit(1);
+    }
+    try {
+      const result = await removeRemote(name, { purge: !!opts.purge });
+      if (opts.json) { process.stdout.write(JSON.stringify(result, null, 2) + '\n'); return; }
+      console.log(chalk.green(`  ✓ Removed ${name}${opts.purge ? ' (local copy deleted)' : ''}`));
+    } catch (err) {
+      console.error(chalk.red(`  ✗ ${err.message}`));
+      process.exit(1);
+    }
+  });
+
+remoteCmd.command('sync [name]').description('Pull session files from remote machines (all, or one) via rsync over ssh')
+  .option('--json', 'Output as JSON')
+  .action(async (name, opts) => {
+    const remotes = await loadRemotes();
+    if (!remotes.length) {
+      console.log(chalk.yellow('  No remotes configured. Add one with: csesh remote add <name> <user@host>'));
+      return;
+    }
+    if (!opts.json) process.stderr.write(`  ${BRAND} syncing ${name || remotes.map(r => r.name).join(', ')}...\n`);
+    let results;
+    try { results = await syncRemotes(name ? [name] : null); }
+    catch (err) {
+      console.error(chalk.red(`  ✗ ${err.message}`));
+      process.exit(1);
+    }
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(results, null, 2) + '\n');
+    } else {
+      for (const r of results) {
+        const secs = (r.durationMs / 1000).toFixed(1);
+        if (r.ok) console.log(chalk.green(`  ✓ ${r.name.padEnd(18)} ${String(r.sessions).padStart(5)} sessions  ${chalk.dim(secs + 's')}`));
+        else console.log(chalk.red(`  ✗ ${r.name.padEnd(18)} ${r.error}`) + chalk.dim(`  (${r.sessions} sessions in local copy)`));
+      }
+    }
+    if (results.some(r => !r.ok)) process.exitCode = 1;
+  });
 
 program.command('web').description('Start web dashboard')
   .option('-p, --port <n>', 'Port number', parseInt, 3456)

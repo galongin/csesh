@@ -17,6 +17,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, setTitle, addTag, removeTag, toggleFavorite, setNote, setTierOverride, getAllTags, batchSetTag, loadMetadata, setStatus, batchSetStatus, setImportant, batchSetImportant } from '../lib/metadata.js';
 import { parseStatusInput, parseStatusFilter, statusCounts } from '../lib/status.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeCommand } from '../lib/remotes.js';
 import { renameSessionSlug } from '../lib/rename.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -35,18 +36,19 @@ async function getSessions(forceRefresh = false) {
     return sessionsCache;
   }
 
-  const files = await findSessionFiles();
+  // Local sessions + pull-only mirrors of remote machines (see lib/remotes.js)
+  const files = [...await findSessionFiles(), ...await findRemoteSessionFiles()];
   const results = [];
 
   for (let i = 0; i < files.length; i += 50) {
     const batch = files.slice(i, i + 50);
     const batchResults = await Promise.all(batch.map(async f => {
       const cached = await getCached(f.filePath);
-      if (cached) return cached;
+      if (cached) return tagHost(cached, f);
       try {
         const summary = await fastScan(f);
         await setCached(f.filePath, summary);
-        return summary;
+        return tagHost(summary, f);
       } catch (err) {
         console.error(`csesh: scan error for ${f.filePath}: ${err.message}`);
         return null;
@@ -70,6 +72,11 @@ async function getSessions(forceRefresh = false) {
   sessionsCache = results;
   lastLoadTime = Date.now();
   return results;
+}
+
+/** Add the ssh resume command for remote sessions (detail view). */
+function withResume(session) {
+  return session.remote ? { ...session, resumeCommand: remoteResumeCommand(session) } : session;
 }
 
 function invalidateCache() {
@@ -124,6 +131,32 @@ async function readBody(req) {
       catch { resolve({}); }
     });
   });
+}
+
+let syncInFlight = false;
+
+/**
+ * Guard for endpoints that trigger outbound ssh/rsync or change remote config:
+ * only same-origin/localhost callers, and JSON bodies (forces a CORS preflight,
+ * so a random web page cannot fire a "simple" cross-site POST).
+ */
+function isTrustedMutation(req) {
+  const origin = req.headers.origin;
+  if (origin && corsOrigin(req) !== origin) return false;
+  if (req.method === 'DELETE') return true;
+  return (req.headers['content-type'] || '').toLowerCase().startsWith('application/json');
+}
+
+/** This machine + configured remotes, with session counts and last sync state. */
+async function describeMachines() {
+  const [remotes, state, sessions] = await Promise.all([loadRemotes(), loadRemoteState(), getSessions()]);
+  const counts = {};
+  for (const s of sessions) counts[s.host] = (counts[s.host] || 0) + 1;
+  return {
+    local: { name: LOCAL_HOST, local: true, sessions: counts[LOCAL_HOST] || 0 },
+    remotes: remotes.map(r => ({ ...r, sessions: counts[r.name] || 0, lastSync: state[r.name] || null })),
+    syncing: syncInFlight,
+  };
 }
 
 async function handleRequest(req, res) {
@@ -185,6 +218,7 @@ async function handleRequest(req, res) {
         favorite: params.favorite === 'true' || null,
         status: params.status || null,
         important: params.important === 'true' || null,
+        host: params.host || null,
         sort: params.sort || 'date',
         query: params.q || null,
         limit: parseInt(params.limit) || 50,
@@ -205,20 +239,20 @@ async function handleRequest(req, res) {
       // If not deeply analyzed yet, do a full scan
       if (!session.analyzed) {
         try {
-          const files = await findSessionFiles();
-          const file = files.find(f => f.id === session.id);
-          if (file) {
-            const deep = await fullScan(file, { analyze: true });
+          const file = { id: session.id, filePath: session.filePath, projectSlug: session.slug,
+            host: session.host, remote: session.remote, remoteTarget: session.remoteTarget };
+          if (file.filePath) {
+            const deep = tagHost(await fullScan(file, { analyze: true }), file);
             classifyAll([deep]);
             await mergeMetadata([deep]);
             await setCached(file.filePath, deep);
             await flushCache();
-            send(deep);
+            send(withResume(deep));
             return;
           }
         } catch (err) { console.error(`csesh: deep analysis error: ${err.message}`); }
       }
-      send(session);
+      send(withResume(session));
       return;
     }
 
@@ -245,6 +279,13 @@ async function handleRequest(req, res) {
       const body = await readBody(req);
       if (body.customTitle !== undefined) {
         await setTitle(id, body.customTitle);
+        const target = (await getSessions()).find(s => s.id === id);
+        if (target?.remote) {
+          // Remote mirrors are read-only: keep the title in metadata only
+          invalidateCache();
+          send({ ok: true, slugRenamed: false, remote: true });
+          return;
+        }
         // Also rename the slug in the JSONL so `claude --resume` shows the new name
         try {
           const result = await renameSessionSlug(id, body.customTitle);
@@ -348,6 +389,61 @@ async function handleRequest(req, res) {
       return;
     }
 
+    // ── Remote machines ──────────────────────────────────────────
+    if (path === '/api/remotes' && method === 'GET') {
+      send(await describeMachines());
+      return;
+    }
+
+    if (path.startsWith('/api/remotes') && (method === 'POST' || method === 'DELETE') && !isTrustedMutation(req)) {
+      return send({ error: 'Forbidden: send JSON from the local dashboard/CLI' }, 403);
+    }
+
+    if (path === '/api/remotes' && method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const aliases = Array.isArray(body.aliases) ? body.aliases
+          : typeof body.aliases === 'string' ? body.aliases.split(',') : [];
+        const remote = await addRemote({ name: (body.name || '').trim(), target: (body.target || '').trim(), aliases });
+        send({ ok: true, remote }, 201);
+      } catch (err) {
+        send({ error: err.message }, 400);
+      }
+      return;
+    }
+
+    const remoteDelMatch = path.match(/^\/api\/remotes\/([A-Za-z0-9._-]+)$/);
+    if (remoteDelMatch && method === 'DELETE') {
+      const params = parseQuery(req.url);
+      try {
+        const result = await removeRemote(remoteDelMatch[1], { purge: params.purge === 'true' });
+        invalidateCache();
+        send({ ok: true, ...result });
+      } catch (err) {
+        send({ error: err.message }, 404);
+      }
+      return;
+    }
+
+    if (path === '/api/remotes/sync' && method === 'POST') {
+      const body = await readBody(req);
+      if (body.names !== undefined && !Array.isArray(body.names)) {
+        return send({ error: 'names must be an array of remote names' }, 400);
+      }
+      if (syncInFlight) return send({ error: 'A sync is already running' }, 409);
+      syncInFlight = true;
+      try {
+        const results = await syncRemotes(body.names || null);
+        invalidateCache();
+        send({ ok: results.every(r => r.ok), results });
+      } catch (err) {
+        send({ error: err.message }, 400);
+      } finally {
+        syncInFlight = false;
+      }
+      return;
+    }
+
     // ── Stats ────────────────────────────────────────────────────
     if (path === '/api/stats' && method === 'GET') {
       const params = parseQuery(req.url);
@@ -423,6 +519,7 @@ async function handleRequest(req, res) {
       const sessions = await getSessions();
       const session = sessions.find(s => s.id === id || s.id.startsWith(id));
       if (!session) return send({ error: 'Not found' }, 404);
+      if (session.remote) return send({ error: `Session is on remote machine ${session.host} (read-only copy); trash it there` }, 400);
       const result = await trashSession(session, 'web');
       invalidateCache();
       await clearCache();
@@ -439,8 +536,10 @@ async function handleRequest(req, res) {
       const sessions = await getSessions();
       let trashed = 0;
       let errors = 0;
+      let skippedRemote = 0;
       for (const id of body.ids) {
         const session = sessions.find(s => s.id === id);
+        if (session?.remote) { skippedRemote++; continue; }
         if (session) {
           try {
             await trashSession(session, 'batch');
@@ -453,7 +552,7 @@ async function handleRequest(req, res) {
       }
       invalidateCache();
       await clearCache();
-      send({ trashed, errors, total: body.ids.length });
+      send({ trashed, errors, skippedRemote, total: body.ids.length });
       return;
     }
 
