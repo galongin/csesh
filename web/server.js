@@ -15,7 +15,8 @@ import { classifyAll, junkLabel } from '../lib/classifier.js';
 import { filterSessions } from '../lib/search.js';
 import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, deleteFromTrash } from '../lib/cleanup.js';
-import { mergeMetadata, setTitle, addTag, removeTag, toggleFavorite, setNote, setTierOverride, getAllTags, batchSetTag, loadMetadata } from '../lib/metadata.js';
+import { mergeMetadata, setTitle, addTag, removeTag, toggleFavorite, setNote, setTierOverride, getAllTags, batchSetTag, loadMetadata, setStatus, batchSetStatus, setImportant, batchSetImportant } from '../lib/metadata.js';
+import { parseStatusInput, parseStatusFilter, statusCounts } from '../lib/status.js';
 import { renameSessionSlug } from '../lib/rename.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -173,6 +174,8 @@ async function handleRequest(req, res) {
     // ── Sessions list ────────────────────────────────────────────
     if (path === '/api/sessions' && method === 'GET') {
       const params = parseQuery(req.url);
+      try { parseStatusFilter(params.status); }
+      catch (err) { return send({ error: err.message }, 400); }
       const sessions = await getSessions();
       const result = filterSessions(sessions, {
         project: params.project || null,
@@ -180,6 +183,8 @@ async function handleRequest(req, res) {
         tier: params.tier || null,
         tag: params.tag || null,
         favorite: params.favorite === 'true' || null,
+        status: params.status || null,
+        important: params.important === 'true' || null,
         sort: params.sort || 'date',
         query: params.q || null,
         limit: parseInt(params.limit) || 50,
@@ -305,6 +310,44 @@ async function handleRequest(req, res) {
       return;
     }
 
+    // ── Set workflow status ──────────────────────────────────────
+    const statusMatch = path.match(/^\/api\/sessions\/([a-f0-9-]+)\/status$/);
+    if (statusMatch && method === 'POST') {
+      const id = statusMatch[1];
+      const body = await readBody(req);
+      if (!('status' in body)) {
+        return send({ error: 'status must be one of: backlog, wip, done, or null' }, 400);
+      }
+      const parsed = parseStatusInput(body.status);
+      if (!parsed.ok) return send({ error: parsed.error }, 400);
+      const sessions = await getSessions();
+      const session = sessions.find(s => s.id === id);
+      if (!session) return send({ error: 'Not found' }, 404);
+      await setStatus(session.id, parsed.status);
+      invalidateCache();
+      const fresh = (await getSessions()).find(s => s.id === session.id);
+      send({ ok: true, status: fresh?.status ?? null, statusExplicit: !!fresh?.statusExplicit });
+      return;
+    }
+
+    // ── Set / toggle important flag ──────────────────────────────
+    const importantMatch = path.match(/^\/api\/sessions\/([a-f0-9-]+)\/important$/);
+    if (importantMatch && method === 'POST') {
+      const id = importantMatch[1];
+      const body = await readBody(req);
+      if (body.important !== undefined && typeof body.important !== 'boolean') {
+        return send({ error: 'important must be true, false, or omitted (toggle)' }, 400);
+      }
+      const sessions = await getSessions();
+      const session = sessions.find(s => s.id === id);
+      if (!session) return send({ error: 'Not found' }, 404);
+      const important = await setImportant(session.id, body.important);
+      invalidateCache();
+      const fresh = (await getSessions()).find(s => s.id === session.id);
+      send({ ok: true, important, status: fresh?.status ?? null, statusExplicit: !!fresh?.statusExplicit });
+      return;
+    }
+
     // ── Stats ────────────────────────────────────────────────────
     if (path === '/api/stats' && method === 'GET') {
       const params = parseQuery(req.url);
@@ -315,6 +358,8 @@ async function handleRequest(req, res) {
       stats.trashedCount = trashItems.length;
       stats.trashedSize = trashItems.reduce((sum, i) => sum + (i.fileSizeBytes || 0), 0);
       stats.version = PKG_VERSION;
+      const scoped = params.project ? filterSessions(sessions, { project: params.project }).sessions : sessions;
+      stats.statusCounts = statusCounts(scoped);
       send(stats);
       return;
     }
@@ -421,6 +466,32 @@ async function handleRequest(req, res) {
       await batchSetTag(body.ids, body.tag);
       invalidateCache();
       send({ ok: true, tagged: body.ids.length });
+      return;
+    }
+
+    // ── Batch status ─────────────────────────────────────────────
+    if (path === '/api/batch/status' && method === 'POST') {
+      const body = await readBody(req);
+      if (!body.ids || !Array.isArray(body.ids) || !('status' in body)) {
+        return send({ error: 'Missing ids array or status' }, 400);
+      }
+      const parsed = parseStatusInput(body.status);
+      if (!parsed.ok) return send({ error: parsed.error }, 400);
+      await batchSetStatus(body.ids, parsed.status);
+      invalidateCache();
+      send({ ok: true, updated: body.ids.length, status: parsed.status });
+      return;
+    }
+
+    // ── Batch important ──────────────────────────────────────────
+    if (path === '/api/batch/important' && method === 'POST') {
+      const body = await readBody(req);
+      if (!body.ids || !Array.isArray(body.ids) || typeof body.important !== 'boolean') {
+        return send({ error: 'Missing ids array or important (boolean)' }, 400);
+      }
+      await batchSetImportant(body.ids, body.important);
+      invalidateCache();
+      send({ ok: true, updated: body.ids.length, important: body.important });
       return;
     }
 
