@@ -17,6 +17,7 @@ import {
   shq,
   remoteResumeArgv,
   remoteResumeCommand,
+  validateClaudeCommand,
 } from '../lib/remotes.js';
 import { filterSessions } from '../lib/search.js';
 
@@ -111,6 +112,28 @@ describe('Remotes — resume command', () => {
       remoteResumeCommand({ id: 'abc', cwd: '/home/alice/x', remoteTarget: 'alice@10.0.0.6' }),
       "ssh -t alice@10.0.0.6 'cd /home/alice/x && claude --resume abc'",
     );
+  });
+
+  it('should use the per-machine claude command (e.g. hclaude wrapper)', () => {
+    const session = { id: 'abc', cwd: '/space/x', remoteTarget: 'u@h', remoteClaude: 'hclaude' };
+    assert.equal(remoteResumeCommand(session), "ssh -t u@h 'cd /space/x && hclaude --resume abc'");
+    assert.equal(remoteResumeArgv(session)[2], 'cd /space/x && hclaude --resume abc');
+  });
+
+  it('should fall back to claude when the configured command is unsafe', () => {
+    for (const bad of ['-x', 'a b', 'x;rm -rf ~', '$(id)', '', 42]) {
+      assert.notEqual(validateClaudeCommand(bad), null, String(bad));
+    }
+    for (const ok of ['hclaude', '/opt/bin/claude', 'claude-2.1']) assert.equal(validateClaudeCommand(ok), null, ok);
+    const session = { id: 'abc', cwd: '/x', remoteTarget: 'u@h', remoteClaude: 'x;id' };
+    assert.equal(remoteResumeArgv(session)[2], 'cd /x && claude --resume abc');
+  });
+
+  it('should carry the claude command through host tagging', () => {
+    const s = tagHost({ id: 'r' }, { id: 'r', host: 'build-gw', remote: true, remoteTarget: 'u@h', remoteClaude: 'hclaude' });
+    assert.equal(s.remoteClaude, 'hclaude');
+    tagHost(s, { id: 'r' });
+    assert.equal('remoteClaude' in s, false);
   });
 
   it('should quote paths with spaces and quotes so the remote shell sees one word', () => {

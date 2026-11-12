@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CLI: `csesh status <id> <backlog|wip|done|clear>`, `csesh important <id> [on|off]`, `list --status/--important`, a STATUS column, and status in `--json`. The `resume` picker defaults to Backlog + WIP (`--all`, `--status`).
   - API: `POST /api/sessions/:id/status`, `POST /api/sessions/:id/important`, `POST /api/batch/status`, `POST /api/batch/important`, plus `GET /api/sessions?status=&important=`. Sessions include `status`, `statusExplicit` and `important`; `/api/stats` includes `statusCounts`.
   - Dashboard: it now opens on **My view** (WIP / Backlog / Done). Also added: status tabs, a Status card, a status column and sort, detail-view buttons, a batch Status menu, and the shortcuts `w`/`b`/`d`/`i`.
-- **Remote machines**: csesh can pull a read-only copy of other machines' sessions over rsync + ssh. The machine list is in `~/.claude/tools/csesh/remotes.json`.
+- **Remote machines**: csesh can pull a read-only copy of other machines' sessions over rsync + ssh. The machine list is in `~/.claude/tools/csesh/remotes.json`. Each machine can set `claude` to a wrapper command (e.g. `hclaude`) used when resuming its sessions.
   - Every session has a `host`.
   - CLI: `csesh remote list|add|rm|sync`, `list --host` with a HOST column, and `resume --host`. Remote sessions resume over `ssh -t`.
   - API: `GET/POST /api/remotes`, `DELETE /api/remotes/:name`, `POST /api/remotes/sync`, and `GET /api/sessions?host=`.

@@ -1496,7 +1496,7 @@ remoteCmd.command('list').description('List remote machines and their last sync'
     const table = new Table({ head: ['NAME', 'TARGET', 'SESSIONS', 'LAST SYNC'].map(h => chalk.cyan(h)), colWidths: [18, 44, 10, 46], wordWrap: true });
     for (const r of remotes) {
       const st = state[r.name];
-      table.push([r.name + (r.aliases?.length ? chalk.dim(`\n${r.aliases.join(', ')}`) : ''), r.target, st?.sessions ?? '-', fmtSyncState(st)]);
+      table.push([r.name + (r.aliases?.length ? chalk.dim(`\n${r.aliases.join(', ')}`) : ''), r.target + (r.claude ? chalk.dim(` · ${r.claude}`) : ''), st?.sessions ?? '-', fmtSyncState(st)]);
     }
     console.log(table.toString());
     console.log(chalk.dim(`  Config: ${REMOTES_FILE}\n`));
@@ -1504,6 +1504,7 @@ remoteCmd.command('list').description('List remote machines and their last sync'
 
 remoteCmd.command('add <name> <target>').description('Add a remote machine (target: user@host, as you would ssh to it)')
   .option('--alias <names>', 'Comma-separated alternative names (e.g. fqdn)')
+  .option('--claude <cmd>', 'Command that starts Claude Code on that machine (default: claude), e.g. hclaude')
   .option('--json', 'Output as JSON')
   .action(async (name, target, opts) => {
     if (!name || !target) {
@@ -1511,7 +1512,7 @@ remoteCmd.command('add <name> <target>').description('Add a remote machine (targ
       process.exit(1);
     }
     try {
-      const remote = await addRemote({ name, target, aliases: opts.alias ? opts.alias.split(',') : [] });
+      const remote = await addRemote({ name, target, aliases: opts.alias ? opts.alias.split(',') : [], claude: opts.claude || null });
       if (opts.json) { process.stdout.write(JSON.stringify(remote, null, 2) + '\n'); return; }
       console.log(chalk.green(`  ✓ Added ${chalk.bold(name)} → ${target}`));
       console.log(chalk.dim(`  Run: csesh remote sync ${name}`));

@@ -240,7 +240,7 @@ async function handleRequest(req, res) {
       if (!session.analyzed) {
         try {
           const file = { id: session.id, filePath: session.filePath, projectSlug: session.slug,
-            host: session.host, remote: session.remote, remoteTarget: session.remoteTarget };
+            host: session.host, remote: session.remote, remoteTarget: session.remoteTarget, remoteClaude: session.remoteClaude };
           if (file.filePath) {
             const deep = tagHost(await fullScan(file, { analyze: true }), file);
             classifyAll([deep]);
@@ -404,7 +404,8 @@ async function handleRequest(req, res) {
       try {
         const aliases = Array.isArray(body.aliases) ? body.aliases
           : typeof body.aliases === 'string' ? body.aliases.split(',') : [];
-        const remote = await addRemote({ name: (body.name || '').trim(), target: (body.target || '').trim(), aliases });
+        const remote = await addRemote({ name: (body.name || '').trim(), target: (body.target || '').trim(), aliases,
+          claude: typeof body.claude === 'string' ? body.claude.trim() || null : null });
         send({ ok: true, remote }, 201);
       } catch (err) {
         send({ error: err.message }, 400);

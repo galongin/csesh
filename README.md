@@ -241,7 +241,7 @@ The dashboard opens on **My view**: WIP, then Backlog, then Done (collapsed), ea
 You can work on several machines and still see every session in one place. Add your other (Linux) machines as **remotes**, and csesh pulls a read-only copy of their sessions over `rsync` + `ssh`:
 
 ```bash
-csesh remote add build-gw alice@10.0.0.5 --alias build-gw.corp.example.com
+csesh remote add build-gw alice@10.0.0.5 --alias build-gw.corp.example.com --claude hclaude  # --claude: wrapper command used there (default: claude)
 csesh remote add lab-box  alice@10.0.0.6
 csesh remote sync               # all remotes (or: csesh remote sync lab-box)
 csesh remote list               # last sync, session counts, errors
@@ -397,7 +397,7 @@ The web server exposes a full REST API at `http://localhost:<port>/api/`.
 | `POST` | `/api/batch/status` | Batch status `{ "ids": [...], "status": "..." \| null }` |
 | `POST` | `/api/batch/important` | Batch important `{ "ids": [...], "important": true \| false }` |
 | `GET` | `/api/remotes` | This machine + remotes with session counts and last sync |
-| `POST` | `/api/remotes` | Add a remote `{ "name": "...", "target": "user@host", "aliases": [...] }` |
+| `POST` | `/api/remotes` | Add a remote `{ "name": "...", "target": "user@host", "aliases": [...], "claude": "claude" }` |
 | `DELETE` | `/api/remotes/:name` | Remove a remote (`?purge=true` also deletes the local copy) |
 | `POST` | `/api/remotes/sync` | Sync remotes `{ "names": [...] }` (omit for all) |
 | `POST` | `/api/batch/trash-delete` | Batch permanent delete from trash |
