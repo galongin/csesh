@@ -602,7 +602,19 @@ const tierNames={1:'Auto-delete',2:'Suggested',3:'Review',4:'Keep'};
 const tierClasses={1:'tier-1',2:'tier-2',3:'tier-3',4:'tier-4'};
 // Workflow status (see lib/status.js — the server computes the effective status)
 const STATUS_ORDER=['wip','backlog','done'];
-const statusNames={wip:'WIP',backlog:'Backlog',done:'Done'};
+const statusNames={recent:'Recently active (48h)',wip:'WIP',backlog:'Backlog',done:'Done'};
+// My view: sessions touched recently go on top whatever their status (except ones you marked Done)
+const RECENT_MS=48*3600e3;
+function isRecent(x){return !!x.lastTimestamp&&Date.now()-new Date(x.lastTimestamp)<RECENT_MS&&!(x.status==='done'&&x.statusExplicit)}
+function myGroup(x){return isRecent(x)?'recent':x.status}
+function groupRank(x){const g=myGroup(x);return g==='recent'?-1:statusRank(x)}
+// Search: plain substring, or ignoring punctuation/case ("samba" finds "SAM-BA")
+const normQ=t=>(t||'').toLowerCase().replace(/[^a-z0-9]+/g,'');
+function sessionMatches(x,q){
+  const hay=[x.title,x.displayTitle,x.aiTitle,x.promptTitle,x.shortProject,x.project,x.cwd,x.gitBranch,x.host,x.id,x.notes,...(x.tags||[]),...(x.autoTags||[])].filter(Boolean).join('\n').toLowerCase();
+  if(hay.includes(q))return true;
+  const nq=normQ(q);return nq.length>=3&&normQ(hay).includes(nq);
+}
 const STATUS_TABS=['mine','wip','backlog','done','important'];
 let doneCollapsed=true;
 let machines={local:null,remotes:[],syncing:false},currentHost='',syncing=false;
@@ -936,11 +948,11 @@ function getFiltered(ignoreCollapse=false){
   else if(currentTab==='suggested')s=s.filter(x=>x.tier===2);
   else if(currentTab==='auto-delete')s=s.filter(x=>x.tier===1);
   else if(currentTab==='favorites')s=s.filter(x=>x.favorite);
-  else if(currentTab==='mine')s=s.filter(x=>x.status&&(ignoreCollapse||x.status!=='done'||!doneCollapsed));
+  else if(currentTab==='mine')s=s.filter(x=>isRecent(x)||(x.status&&(ignoreCollapse||x.status!=='done'||!doneCollapsed)));
   else if(currentTab==='wip'||currentTab==='backlog'||currentTab==='done')s=s.filter(x=>x.status===currentTab);
   else if(currentTab==='important')s=s.filter(x=>x.important);
   const q=document.getElementById('filterInput')?.value?.toLowerCase();
-  if(q)s=s.filter(x=>(x.title||'').toLowerCase().includes(q)||(x.displayTitle||'').toLowerCase().includes(q)||(x.shortProject||'').toLowerCase().includes(q)||(x.gitBranch||'').toLowerCase().includes(q)||(x.host||'').toLowerCase().includes(q)||(x.id||'').toLowerCase().includes(q)||(x.tags||[]).some(t=>t.includes(q))||(x.autoTags||[]).some(t=>t.includes(q)));
+  if(q)s=s.filter(x=>sessionMatches(x,q));
   switch(currentSort){
     case'size':s.sort((a,b)=>b.fileSizeBytes-a.fileSizeBytes);break;
     case'messages':s.sort((a,b)=>(b.userMessageCount+b.assistantMessageCount)-(a.userMessageCount+a.assistantMessageCount));break;
@@ -952,19 +964,19 @@ function getFiltered(ignoreCollapse=false){
     default:s.sort(byRecent)
   }
   // My view: group WIP → Backlog → Done (stable sort keeps the chosen order inside each group)
-  if(currentTab==='mine')s.sort((a,b)=>statusRank(a)-statusRank(b));
+  if(currentTab==='mine')s.sort((a,b)=>groupRank(a)-groupRank(b));
   return s;
 }
 function renderTable(){
   const f=getFiltered(),start=currentPage*PAGE,page=f.slice(start,start+PAGE);
   const body=document.getElementById('tableBody');
   const grouped=currentTab==='mine';
-  const groupCounts={wip:0,backlog:0,done:0};
-  if(grouped)for(const x of getFiltered(true))groupCounts[x.status]++;
+  const groupCounts={recent:0,wip:0,backlog:0,done:0};
+  if(grouped)for(const x of getFiltered(true))groupCounts[myGroup(x)]++;
   const groupRow=(st,cont)=>`<tr class="grp-row" onclick="${st==='done'?'toggleDoneGroup()':''}"><td colspan="10">${st==='done'?(doneCollapsed?'▸ ':'▾ '):''}${statusNames[st]}<span class="grp-count">${groupCounts[st]}${cont?' · continued':''}</span></td></tr>`;
   let html=page.map((s,i)=>{
     let hdr='';
-    if(grouped&&(i===0||page[i-1].status!==s.status))hdr=groupRow(s.status,i===0&&start>0&&f[start-1]?.status===s.status);
+    if(grouped&&(i===0||myGroup(page[i-1])!==myGroup(s)))hdr=groupRow(myGroup(s),i===0&&start>0&&f[start-1]&&myGroup(f[start-1])===myGroup(s));
     const sel=selectedIds.has(s.id);
     const fav=s.favorite?'<span style="color:var(--yellow)">★</span> ':'';
     const title=fav+esc((s.displayTitle||s.title||'').slice(0,55));
