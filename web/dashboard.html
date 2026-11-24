@@ -155,6 +155,9 @@ body:not(.cleanup-on) .cu{display:none!important}
 .host{font-size:.72rem;color:var(--text-3);font-family:var(--mono)}
 .host.remote{color:var(--purple)}
 .mach-row .dot.never{background:var(--text-3)}
+.mach-row.off{opacity:.55}
+.mach-row .dot.off{background:transparent;border:1px solid var(--text-3);box-sizing:border-box}
+.mach-item.off>div:first-child{opacity:.6}
 .sb-actions{display:flex;gap:6px;margin-top:6px}
 .sb-actions .btn{flex:1;justify-content:center;padding:3px 6px;font-size:.72rem}
 #machinesModal{position:fixed;inset:0;background:var(--shadow-modal);z-index:300;display:none;align-items:center;justify-content:center}
@@ -719,17 +722,18 @@ function hostCounts(){const c={};for(const s of allSessions)c[s.host]=(c[s.host]
 function renderMachinesCard(){
   if(!machines.local)return'';
   const cnt=hostCounts();
-  const row=(name,label,dotCls,dotStyle,title)=>`<div class="tier-row clickable mach-row${currentHost===name?' active':''}" onclick="setHost(currentHost==='${name}'?'':'${name}',true)" title="${escAttr(title)}"><span><span class="dot ${dotCls}" style="${dotStyle}"></span>${esc(label)}</span><span>${cnt[name]||0}</span></div>`;
+  const row=(name,label,dotCls,dotStyle,title,off)=>`<div class="tier-row clickable mach-row${currentHost===name?' active':''}${off?' off':''}" onclick="setHost(currentHost==='${name}'?'':'${name}',true)" title="${escAttr(title)}"><span><span class="dot ${dotCls}" style="${dotStyle}"></span>${esc(label)}</span><span>${cnt[name]||0}</span></div>`;
   let h='<div class="sb-section-title" style="margin-top:8px">Machines</div>';
   h+=row(machines.local.name,machines.local.name+' (this)','','background:var(--accent)','This machine');
   for(const r of machines.remotes){
     const st=r.lastSync;
+    if(r.disabled){h+=row(r.name,r.name+' (disabled)','off','',`${r.target} — disabled: not synced${st?.lastOkAt?`; local copy from ${timeAgoShort(st.lastOkAt)}`:''}`,true);continue}
     const dot=!st?'never':'';
     const color=!st?'':st.ok?'background:var(--green)':'background:var(--red)';
     const title=!st?`${r.target} — never synced`:st.ok?`${r.target} — synced ${timeAgoShort(st.at)}`:`${r.target} — last sync failed ${timeAgoShort(st.at)}: ${st.error}`+(st.lastOkAt?` (last good ${timeAgoShort(st.lastOkAt)})`:'');
     h+=row(r.name,r.name,dot,color,title);
   }
-  h+=`<div class="sb-actions"><button class="btn btn-sm" id="syncBtn" onclick="syncMachines()" ${syncing||!machines.remotes.length?'disabled':''} title="Pull sessions from all remote machines">${syncing?'Syncing…':'⟳ Sync remotes'}</button><button class="btn btn-sm" onclick="openMachines()" title="Add / remove machines">⚙ Machines</button></div>`;
+  h+=`<div class="sb-actions"><button class="btn btn-sm" id="syncBtn" onclick="syncMachines()" ${syncing||!machines.remotes.some(r=>!r.disabled)?'disabled':''} title="Pull sessions from all enabled remote machines">${syncing?'Syncing…':'⟳ Sync remotes'}</button><button class="btn btn-sm" onclick="openMachines()" title="Add / remove machines">⚙ Machines</button></div>`;
   return h;
 }
 function renderHostSelect(){
@@ -767,11 +771,11 @@ function renderMachinesModal(){
   if(!machines.remotes.length){el.innerHTML='<div style="padding:10px 0;color:var(--text-3);font-size:.8rem">No remote machines yet — add one below.</div>';return}
   el.innerHTML=machines.remotes.map(r=>{
     const st=r.lastSync;
-    const status=!st?'never synced':st.ok?`<span style="color:var(--green)">✓</span> synced ${timeAgoShort(st.at)} · ${(st.durationMs/1000).toFixed(1)}s`:`<span style="color:var(--red)">✗</span> failed ${timeAgoShort(st.at)}${st.lastOkAt?` · last good ${timeAgoShort(st.lastOkAt)}`:''}`;
-    return`<div class="mach-item">
+    const status=(r.disabled?'<span style="color:var(--yellow)">disabled</span> · ':'')+(!st?'never synced':st.ok?`<span style="color:var(--green)">✓</span> synced ${timeAgoShort(st.at)} · ${(st.durationMs/1000).toFixed(1)}s`:`<span style="color:var(--red)">✗</span> failed ${timeAgoShort(st.at)}${st.lastOkAt?` · last good ${timeAgoShort(st.lastOkAt)}`:''}`);
+    return`<div class="mach-item${r.disabled?' off':''}">
       <div><b>${esc(r.name)}</b> <span class="host">${esc(r.target)}</span>${r.aliases?.length?`<div class="meta">aka ${esc(r.aliases.join(', '))}</div>`:''}<div class="meta">${cnt[r.name]||0} sessions · ${status}</div></div>
-      <div class="acts"><button class="btn btn-sm" ${syncing?'disabled':''} onclick="syncMachines(['${escAttr(r.name)}'])">${syncing?'Syncing…':'⟳ Sync'}</button><button class="btn btn-sm btn-danger" onclick="removeMachine('${escAttr(r.name)}')">Remove</button></div>
-      ${st&&!st.ok?`<div class="err">${esc(st.error)}</div>`:''}
+      <div class="acts">${r.disabled?'':`<button class="btn btn-sm" ${syncing?'disabled':''} onclick="syncMachines(['${escAttr(r.name)}'])">${syncing?'Syncing…':'⟳ Sync'}</button>`}<button class="btn btn-sm" onclick="toggleMachine('${escAttr(r.name)}',${!r.disabled})" title="${r.disabled?'Sync this machine again':'Stop syncing this machine (keeps it and its local copy)'}">${r.disabled?'Enable':'Disable'}</button><button class="btn btn-sm btn-danger" onclick="removeMachine('${escAttr(r.name)}')">Remove</button></div>
+      ${st&&!st.ok&&!r.disabled?`<div class="err">${esc(st.error)}</div>`:''}
     </div>`}).join('');
 }
 async function addMachine(){
@@ -786,6 +790,14 @@ async function addMachine(){
     toast(`Added ${name} — syncing…`);
     syncMachines([name]);
   }catch(e){err.textContent=e.message}
+}
+async function toggleMachine(name,disable){
+  try{
+    const r=await fetch(`/api/remotes/${encodeURIComponent(name)}/${disable?'disable':'enable'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
+    await loadMachines();renderMachinesModal();updateSidebar();
+    toast(disable?`${name} disabled — not synced; its local copy is still shown`:`${name} enabled`);
+  }catch(e){toast(e.message,'error')}
 }
 async function removeMachine(name){
   if(!confirm(`Remove machine "${name}"?\n\nIts sessions disappear from csesh. Statuses you set are kept in metadata.json and come back if you add it again.`))return;

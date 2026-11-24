@@ -17,7 +17,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, setTitle, addTag, removeTag, toggleFavorite, setNote, setTierOverride, getAllTags, batchSetTag, loadMetadata, setStatus, batchSetStatus, setImportant, batchSetImportant } from '../lib/metadata.js';
 import { parseStatusInput, parseStatusFilter, statusCounts } from '../lib/status.js';
-import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeCommand } from '../lib/remotes.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeCommand } from '../lib/remotes.js';
 import { renameSessionSlug } from '../lib/rename.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -409,6 +409,16 @@ async function handleRequest(req, res) {
         send({ ok: true, remote }, 201);
       } catch (err) {
         send({ error: err.message }, 400);
+      }
+      return;
+    }
+
+    const remoteToggleMatch = path.match(/^\/api\/remotes\/([A-Za-z0-9._-]+)\/(enable|disable)$/);
+    if (remoteToggleMatch && method === 'POST') {
+      try {
+        send({ ok: true, ...await setRemoteDisabled(remoteToggleMatch[1], remoteToggleMatch[2] === 'disable') });
+      } catch (err) {
+        send({ error: err.message }, 404);
       }
       return;
     }

@@ -246,6 +246,7 @@ csesh remote add lab-box  alice@10.0.0.6
 csesh remote sync               # all remotes (or: csesh remote sync lab-box)
 csesh remote list               # last sync, session counts, errors
 csesh list --host lab-box        # every session has a host; 'local' = this machine
+csesh remote disable lab-box    # stop syncing it; keeps it and its local copy (csesh remote enable lab-box)
 csesh remote rm lab-box --purge  # --purge also deletes the local copy
 ```
 
@@ -398,6 +399,7 @@ The web server exposes a full REST API at `http://localhost:<port>/api/`.
 | `POST` | `/api/batch/important` | Batch important `{ "ids": [...], "important": true \| false }` |
 | `GET` | `/api/remotes` | This machine + remotes with session counts and last sync |
 | `POST` | `/api/remotes` | Add a remote `{ "name": "...", "target": "user@host", "aliases": [...], "claude": "claude" }` |
+| `POST` | `/api/remotes/:name/disable`, `/api/remotes/:name/enable` | Stop / resume syncing a remote (it stays configured and its local copy is still listed) |
 | `DELETE` | `/api/remotes/:name` | Remove a remote (`?purge=true` also deletes the local copy) |
 | `POST` | `/api/remotes/sync` | Sync remotes `{ "names": [...] }` (omit for all) |
 | `POST` | `/api/batch/trash-delete` | Batch permanent delete from trash |

@@ -18,7 +18,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, emptyTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, loadMetadata, setTitle as metaSetTitle, addTag as metaAddTag, removeTag as metaRemoveTag, toggleFavorite, setNote, getAllTags, setStatus as metaSetStatus, setImportant as metaSetImportant } from '../lib/metadata.js';
 import { STATUS_LABELS, parseStatusInput, parseStatusFilter, effectiveStatus } from '../lib/status.js';
-import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeArgv, remoteResumeCommand, REMOTES_FILE, mirrorDir } from '../lib/remotes.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeArgv, remoteResumeCommand, REMOTES_FILE, mirrorDir } from '../lib/remotes.js';
 import { formatBytes, formatDuration, formatDate, timeAgo, estimateCost, CLAUDE_DIR, PROJECTS_DIR, TOOL_DIR, CACHE_FILE } from '../lib/utils.js';
 import { getConfig } from '../lib/config.js';
 import { renameSessionSlug, titleToSlug } from '../lib/rename.js';
@@ -1496,7 +1496,8 @@ remoteCmd.command('list').description('List remote machines and their last sync'
     const table = new Table({ head: ['NAME', 'TARGET', 'SESSIONS', 'LAST SYNC'].map(h => chalk.cyan(h)), colWidths: [18, 44, 10, 46], wordWrap: true });
     for (const r of remotes) {
       const st = state[r.name];
-      table.push([r.name + (r.aliases?.length ? chalk.dim(`\n${r.aliases.join(', ')}`) : ''), r.target + (r.claude ? chalk.dim(` · ${r.claude}`) : ''), st?.sessions ?? '-', fmtSyncState(st)]);
+      table.push([r.name + (r.aliases?.length ? chalk.dim(`\n${r.aliases.join(', ')}`) : ''), r.target + (r.claude ? chalk.dim(` · ${r.claude}`) : ''), st?.sessions ?? '-',
+        (r.disabled ? chalk.yellow('disabled') + chalk.dim(' (not synced) · ') : '') + fmtSyncState(st)]);
     }
     console.log(table.toString());
     console.log(chalk.dim(`  Config: ${REMOTES_FILE}\n`));
@@ -1540,7 +1541,29 @@ remoteCmd.command('rm <name>').description('Remove a remote machine (keeps its l
     }
   });
 
-remoteCmd.command('sync [name]').description('Pull session files from remote machines (all, or one) via rsync over ssh')
+for (const [cmd, disabled, desc] of [
+  ['disable', true, 'Stop syncing a remote machine (keeps it and its local copy; re-enable any time)'],
+  ['enable', false, 'Resume syncing a disabled remote machine'],
+]) {
+  remoteCmd.command(`${cmd} <name>`).description(desc)
+    .option('--json', 'Output as JSON')
+    .action(async (name, opts) => {
+      if (!name) {
+        console.error(chalk.red(`  ✗ Usage: csesh remote ${cmd} <name>`));
+        process.exit(1);
+      }
+      try {
+        const result = await setRemoteDisabled(name, disabled);
+        if (opts.json) { process.stdout.write(JSON.stringify(result, null, 2) + '\n'); return; }
+        console.log(chalk.green(`  ✓ ${name} ${disabled ? 'disabled — skipped by "csesh remote sync"; its local copy is still listed' : 'enabled'}`));
+      } catch (err) {
+        console.error(chalk.red(`  ✗ ${err.message}`));
+        process.exit(1);
+      }
+    });
+}
+
+remoteCmd.command('sync [name]').description('Pull session files from remote machines (all enabled ones, or one) via rsync over ssh')
   .option('--json', 'Output as JSON')
   .action(async (name, opts) => {
     const remotes = await loadRemotes();
@@ -1548,7 +1571,16 @@ remoteCmd.command('sync [name]').description('Pull session files from remote mac
       console.log(chalk.yellow('  No remotes configured. Add one with: csesh remote add <name> <user@host>'));
       return;
     }
-    if (!opts.json) process.stderr.write(`  ${BRAND} syncing ${name || remotes.map(r => r.name).join(', ')}...\n`);
+    const enabled = remotes.filter(r => !r.disabled);
+    if (!name && !enabled.length) {
+      console.log(chalk.yellow('  All remotes are disabled. Enable one with: csesh remote enable <name>'));
+      return;
+    }
+    if (!opts.json) {
+      const skipped = name ? [] : remotes.filter(r => r.disabled).map(r => r.name);
+      process.stderr.write(`  ${BRAND} syncing ${name || enabled.map(r => r.name).join(', ')}...` +
+        (skipped.length ? chalk.dim(` (skipping disabled: ${skipped.join(', ')})`) : '') + '\n');
+    }
     let results;
     try { results = await syncRemotes(name ? [name] : null); }
     catch (err) {

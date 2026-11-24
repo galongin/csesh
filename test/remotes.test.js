@@ -8,6 +8,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   LOCAL_HOST,
   validateRemoteName,
@@ -151,5 +154,55 @@ describe('Remotes — resume command', () => {
     const argv = execFileSync('sh', ['-c', `for a in ${cmd}; do printf '%s\\n' "$a"; done`]).toString();
     // word-splitting of unquoted $a is avoided by the for-loop over the parsed words
     assert.deepEqual(argv.trimEnd().split('\n'), remoteResumeArgv(session));
+  });
+});
+
+describe('Remotes — disable / enable', () => {
+  // Runs in a child process with a throwaway HOME so the real remotes.json is never touched
+  const run = code => {
+    const home = mkdtempSync(join(tmpdir(), 'csesh-remotes-'));
+    try {
+      return JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', `
+        const m = await import(${JSON.stringify(new URL('../lib/remotes.js', import.meta.url).href)});
+        const synced = [];
+        const runner = async (cmd, args) => { synced.push(args.at(-2).split(':')[0]); return { err: null, stdout: '', stderr: '' }; };
+        ${code}
+      `], { env: { ...process.env, HOME: home }, cwd: home }).toString());
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  };
+
+  it('should skip disabled remotes in "sync all" but keep them configured', () => {
+    const out = run(`
+      await m.addRemote({ name: 'a', target: 'u@a' });
+      await m.addRemote({ name: 'b', target: 'u@b' });
+      await m.setRemoteDisabled('b', true);
+      await m.syncRemotes(null, { runner });
+      const all = await m.loadRemotes();
+      console.log(JSON.stringify({ synced, names: all.map(r => r.name), b: all.find(r => r.name === 'b') }));
+    `);
+    assert.deepEqual(out.synced, ['u@a']);
+    assert.deepEqual(out.names, ['a', 'b']);
+    assert.equal(out.b.disabled, true);
+  });
+
+  it('should still sync a disabled remote when named explicitly, and re-enable it', () => {
+    const out = run(`
+      await m.addRemote({ name: 'b', target: 'u@b' });
+      await m.setRemoteDisabled('b', true);
+      await m.syncRemotes(['b'], { runner });
+      await m.setRemoteDisabled('b', false);
+      await m.syncRemotes(null, { runner });
+      console.log(JSON.stringify({ synced, b: (await m.loadRemotes())[0] }));
+    `);
+    assert.deepEqual(out.synced, ['u@b', 'u@b']);
+    assert.equal('disabled' in out.b, false);
+  });
+
+  it('should reject unknown remotes', () => {
+    const out = run(`
+      try { await m.setRemoteDisabled('nope', true); console.log('{"ok":true}'); }
+      catch (e) { console.log(JSON.stringify({ error: e.message })); }
+    `);
+    assert.match(out.error, /not found/);
   });
 });
