@@ -21,6 +21,7 @@ import {
   remoteResumeArgv,
   remoteResumeCommand,
   validateClaudeCommand,
+  remoteLocalCommand,
 } from '../lib/remotes.js';
 import { filterSessions } from '../lib/search.js';
 
@@ -121,6 +122,11 @@ describe('Remotes — resume command', () => {
     const session = { id: 'abc', cwd: '/space/x', remoteTarget: 'u@h', remoteClaude: 'hclaude' };
     assert.equal(remoteResumeCommand(session), "ssh -t u@h 'cd /space/x && hclaude --resume abc'");
     assert.equal(remoteResumeArgv(session)[2], 'cd /space/x && hclaude --resume abc');
+  });
+
+  it('should give a no-ssh command for use on the machine itself', () => {
+    assert.equal(remoteLocalCommand({ id: 'abc', cwd: '/space/x', remoteTarget: 'u@h', remoteClaude: 'hclaude' }), 'cd /space/x && hclaude --resume abc');
+    assert.equal(remoteLocalCommand({ id: 'abc', cwd: "/my dir", remoteTarget: 'u@h' }), "cd '/my dir' && claude --resume abc");
   });
 
   it('should fall back to claude when the configured command is unsafe', () => {
