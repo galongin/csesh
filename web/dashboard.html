@@ -1113,15 +1113,18 @@ function statusShortcut(kind){
 }
 
 function remoteResumeSection(s){
-  const cmd=s.resumeCommand||'';
+  const cmd=s.resumeCommand||'',local=s.localResumeCommand||'';
+  const cmdRow=(label,c)=>`<div class="launch-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <span style="font-size:.7rem;color:var(--text-3);width:92px;flex-shrink:0">${label}</span>
+        <code class="launch-cmd" style="flex:1;padding:8px 12px;background:var(--bg-1);border-radius:6px;font-size:.8rem;font-family:var(--mono);overflow-x:auto;white-space:nowrap">${esc(c)}</code>
+        <button class="btn btn-sm" data-cmd="${escAttr(c)}" onclick="copyCmd(this.dataset.cmd,this)" title="Copy">Copy</button>
+      </div>`;
   const r=machines.remotes.find(m=>m.name===s.host);
   const synced=r?.lastSync?.lastOkAt?`last synced ${timeAgoShort(r.lastSync.lastOkAt)}`:'';
   return`<div class="launch-section" style="margin:16px 0;padding:16px;background:var(--bg-2);border-radius:8px;border:1px solid var(--border)">
-      <div style="font-weight:600;margin-bottom:10px;font-size:.9rem">Resume on <span style="color:var(--purple)">${esc(s.host)}</span></div>
-      <div class="launch-row" style="display:flex;align-items:center;gap:8px">
-        <code class="launch-cmd" style="flex:1;padding:8px 12px;background:var(--bg-1);border-radius:6px;font-size:.8rem;font-family:var(--mono);overflow-x:auto;white-space:nowrap">${esc(cmd)}</code>
-        <button class="btn btn-sm" data-cmd="${escAttr(cmd)}" onclick="copyCmd(this.dataset.cmd,this)" title="Copy">Copy</button>
-      </div>
+      <div style="font-weight:600;margin-bottom:4px;font-size:.9rem">Resume on <span style="color:var(--purple)">${esc(s.host)}</span></div>
+      ${cmdRow('From here (ssh)',cmd)}
+      ${local?cmdRow('On '+esc(s.host),local):''}
       <div style="font-size:.7rem;color:var(--text-3);margin-top:6px">This is a read-only copy of a session on ${esc(s.host)}${synced?' ('+synced+')':''}. Status, tags and notes are stored on this machine. Or run <code style="font-size:.65rem">csesh resume</code> and pick it — csesh connects over ssh.</div>
     </div>`;
 }

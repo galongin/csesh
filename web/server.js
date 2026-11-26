@@ -17,7 +17,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, setTitle, addTag, removeTag, toggleFavorite, setNote, setTierOverride, getAllTags, batchSetTag, loadMetadata, setStatus, batchSetStatus, setImportant, batchSetImportant } from '../lib/metadata.js';
 import { parseStatusInput, parseStatusFilter, statusCounts } from '../lib/status.js';
-import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeCommand } from '../lib/remotes.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeCommand, remoteLocalCommand } from '../lib/remotes.js';
 import { renameSessionSlug } from '../lib/rename.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -76,7 +76,7 @@ async function getSessions(forceRefresh = false) {
 
 /** Add the ssh resume command for remote sessions (detail view). */
 function withResume(session) {
-  return session.remote ? { ...session, resumeCommand: remoteResumeCommand(session) } : session;
+  return session.remote ? { ...session, resumeCommand: remoteResumeCommand(session), localResumeCommand: remoteLocalCommand(session) } : session;
 }
 
 function invalidateCache() {

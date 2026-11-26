@@ -18,7 +18,7 @@ import { computeStats } from '../lib/stats.js';
 import { trashSession, restoreSession, listTrash, emptyTrash, deleteFromTrash } from '../lib/cleanup.js';
 import { mergeMetadata, loadMetadata, setTitle as metaSetTitle, addTag as metaAddTag, removeTag as metaRemoveTag, toggleFavorite, setNote, getAllTags, setStatus as metaSetStatus, setImportant as metaSetImportant } from '../lib/metadata.js';
 import { STATUS_LABELS, parseStatusInput, parseStatusFilter, effectiveStatus } from '../lib/status.js';
-import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeArgv, remoteResumeCommand, REMOTES_FILE, mirrorDir } from '../lib/remotes.js';
+import { LOCAL_HOST, loadRemotes, loadRemoteState, addRemote, removeRemote, setRemoteDisabled, syncRemotes, findRemoteSessionFiles, tagHost, remoteResumeArgv, remoteResumeCommand, remoteLocalCommand, REMOTES_FILE, mirrorDir } from '../lib/remotes.js';
 import { formatBytes, formatDuration, formatDate, timeAgo, estimateCost, CLAUDE_DIR, PROJECTS_DIR, TOOL_DIR, CACHE_FILE } from '../lib/utils.js';
 import { getConfig } from '../lib/config.js';
 import { renameSessionSlug, titleToSlug } from '../lib/rename.js';
@@ -1292,6 +1292,7 @@ program
       // Session lives on another machine: resume it there over ssh
       console.log(chalk.green(`  \u2713 Resuming on ${chalk.magenta(selected.host)}: ${selected.displayTitle || selected.title}`));
       console.log(chalk.dim(`  ${remoteResumeCommand(selected)}`));
+      console.log(chalk.dim(`  (on ${selected.host} itself: ${remoteLocalCommand(selected)})`));
       console.log();
       const { execFileSync } = await import('child_process');
       try { execFileSync('ssh', remoteResumeArgv(selected), { stdio: 'inherit' }); }
